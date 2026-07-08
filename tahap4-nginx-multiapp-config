@@ -256,9 +256,9 @@ server {
     # ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     # ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     
-    # Logging per subdomain
-    access_log /var/log/nginx/apps/\$app.access.log combined buffer=32k flush=1m;
-    error_log /var/log/nginx/apps/\$app.error.log warn;
+    # Logging per subdomain (fixed path, no variables allowed in buffered logs)
+    access_log /var/log/nginx/apps/subdomains.access.log combined buffer=32k flush=1m;
+    error_log /var/log/nginx/apps/subdomains.error.log warn;
     
     include /etc/nginx/includes/security-headers.conf;
     
