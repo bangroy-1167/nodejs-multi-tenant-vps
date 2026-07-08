@@ -1,0 +1,384 @@
+#!/bin/bash
+
+################################################################################
+# TAHAP 3: GitHub SSH Key Setup dan Git Configuration
+# Ubuntu 24.04 LTS
+#
+# Script ini mengkonfigurasi:
+# - Generate SSH key untuk GitHub
+# - Configure Git user credentials
+# - Test GitHub SSH connection
+# - Setup Git hooks (optional)
+#
+# Usage: bash tahap3-github-git-setup.sh
+################################################################################
+
+set -e
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Functions
+print_header() {
+    echo -e "\n${BLUE}===============================================${NC}"
+    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}===============================================${NC}\n"
+}
+
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}ℹ $1${NC}"
+}
+
+# Check privileges
+if [[ $EUID -eq 0 ]]; then
+    print_error "Script ini tidak boleh dijalankan dengan sudo"
+    exit 1
+fi
+
+print_header "TAHAP 3: GitHub SSH Key Setup dan Git Configuration"
+
+# ============================================================================
+# SECTION 1: Get User Information
+# ============================================================================
+print_header "1. Informasi Pengguna dan GitHub"
+
+# Get current user
+CURRENT_USER=$(whoami)
+USER_HOME=$(eval echo ~$CURRENT_USER)
+
+print_info "User: $CURRENT_USER"
+print_info "Home: $USER_HOME"
+
+# Get GitHub username
+read -p "GitHub username Anda: " GITHUB_USER
+
+if [ -z "$GITHUB_USER" ]; then
+    print_error "GitHub username tidak boleh kosong"
+    exit 1
+fi
+
+print_success "GitHub username: $GITHUB_USER"
+
+# Get Git name
+read -p "Nama untuk Git commits [default: $GITHUB_USER]: " GIT_NAME
+GIT_NAME=${GIT_NAME:-$GITHUB_USER}
+
+# Get Git email
+read -p "Email untuk Git commits [default: $GITHUB_USER@users.noreply.github.com]: " GIT_EMAIL
+GIT_EMAIL=${GIT_EMAIL:-$GITHUB_USER@users.noreply.github.com}
+
+print_success "Git user: $GIT_NAME <$GIT_EMAIL>"
+
+# Get SSH key name
+read -p "Nama SSH key untuk GitHub [default: github]: " SSH_KEY_NAME
+SSH_KEY_NAME=${SSH_KEY_NAME:-github}
+
+SSH_KEY_PATH="$USER_HOME/.ssh/$SSH_KEY_NAME"
+
+# ============================================================================
+# SECTION 2: Create .ssh Directory
+# ============================================================================
+print_header "2. Setup SSH Directory"
+
+if [ ! -d "$USER_HOME/.ssh" ]; then
+    mkdir -p "$USER_HOME/.ssh"
+    chmod 700 "$USER_HOME/.ssh"
+    print_success "SSH directory dibuat: $USER_HOME/.ssh"
+else
+    print_success "SSH directory sudah ada"
+fi
+
+# ============================================================================
+# SECTION 3: Generate SSH Key
+# ============================================================================
+print_header "3. Generate SSH Key untuk GitHub"
+
+if [ -f "$SSH_KEY_PATH" ]; then
+    print_warning "SSH key sudah ada: $SSH_KEY_PATH"
+    read -p "Gunakan existing key? (y/n) [default: y]: " USE_EXISTING
+    USE_EXISTING=${USE_EXISTING:-y}
+    
+    if [[ ! $USE_EXISTING =~ ^[Yy]$ ]]; then
+        print_warning "Membuat backup existing key..."
+        BACKUP_TIME=$(date +%Y%m%d_%H%M%S)
+        mv "$SSH_KEY_PATH" "$SSH_KEY_PATH.backup.$BACKUP_TIME"
+        cp "$SSH_KEY_PATH.pub" "$SSH_KEY_PATH.pub.backup.$BACKUP_TIME"
+        print_success "Backup dibuat: $SSH_KEY_PATH.backup.$BACKUP_TIME"
+        
+        # Generate new key
+        ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY_PATH" -N ""
+        print_success "SSH key baru dibuat: $SSH_KEY_PATH"
+    else
+        print_success "Menggunakan existing SSH key"
+    fi
+else
+    # Generate new key
+    print_info "Menghasilkan SSH key dengan Ed25519 (recommended)..."
+    ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$SSH_KEY_PATH" -N ""
+    print_success "SSH key dibuat: $SSH_KEY_PATH"
+fi
+
+# Set proper permissions
+chmod 600 "$SSH_KEY_PATH"
+chmod 644 "$SSH_KEY_PATH.pub"
+
+# ============================================================================
+# SECTION 4: Configure SSH Config
+# ============================================================================
+print_header "4. Konfigurasi SSH Config"
+
+SSH_CONFIG="$USER_HOME/.ssh/config"
+
+# Backup existing config if exists
+if [ -f "$SSH_CONFIG" ]; then
+    cp "$SSH_CONFIG" "$SSH_CONFIG.backup.$(date +%Y%m%d_%H%M%S)"
+    print_info "Backup SSH config dibuat"
+fi
+
+# Create or update SSH config
+if grep -q "Host github.com" "$SSH_CONFIG" 2>/dev/null; then
+    print_warning "GitHub SSH config sudah ada, memperbarui..."
+    # Remove old github config
+    sed -i '/^Host github.com$/,/^$/d' "$SSH_CONFIG"
+fi
+
+# Add GitHub SSH config
+cat >> "$SSH_CONFIG" << EOF
+Host github.com
+    HostName github.com
+    User git
+    IdentityFile $SSH_KEY_PATH
+    IdentitiesOnly yes
+    AddKeysToAgent yes
+    StrictHostKeyChecking accept-new
+EOF
+
+chmod 600 "$SSH_CONFIG"
+print_success "SSH config updated"
+
+# ============================================================================
+# SECTION 5: Add Key to SSH Agent
+# ============================================================================
+print_header "5. Tambahkan Key ke SSH Agent"
+
+# Start SSH agent if not running
+eval "$(ssh-agent -s)" > /dev/null 2>&1
+
+# Add key
+ssh-add "$SSH_KEY_PATH" 2>/dev/null
+
+print_success "SSH key ditambahkan ke SSH agent"
+
+# ============================================================================
+# SECTION 6: Configure Git
+# ============================================================================
+print_header "6. Konfigurasi Git"
+
+# Configure git user.name
+git config --global user.name "$GIT_NAME"
+print_success "Git user.name: $GIT_NAME"
+
+# Configure git user.email
+git config --global user.email "$GIT_EMAIL"
+print_success "Git user.email: $GIT_EMAIL"
+
+# Configure git defaults
+git config --global init.defaultBranch main
+git config --global pull.rebase false
+git config --global core.pager less
+git config --global core.excludesfile "$USER_HOME/.gitignore_global"
+
+print_success "Git default configurations set"
+
+# Create global .gitignore
+if [ ! -f "$USER_HOME/.gitignore_global" ]; then
+    cat > "$USER_HOME/.gitignore_global" << 'EOF'
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+dist/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Build
+.next/
+.cache/
+out/
+
+# Testing
+coverage/
+.nyc_output/
+EOF
+    print_success "Global .gitignore dibuat"
+fi
+
+# ============================================================================
+# SECTION 7: Display Public Key
+# ============================================================================
+print_header "7. Public SSH Key (untuk GitHub)"
+
+echo -e "${CYAN}Salin public key berikut dan paste ke GitHub Settings > SSH and GPG keys:${NC}\n"
+echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}"
+cat "$SSH_KEY_PATH.pub"
+echo -e "${YELLOW}═══════════════════════════════════════════════════════════════${NC}\n"
+
+# Copy to clipboard if xclip available
+if command -v xclip &> /dev/null; then
+    cat "$SSH_KEY_PATH.pub" | xclip -selection clipboard
+    print_success "Public key sudah disalin ke clipboard"
+fi
+
+# ============================================================================
+# SECTION 8: Test GitHub Connection
+# ============================================================================
+print_header "8. Test Koneksi GitHub"
+
+echo -e "${CYAN}Mencoba connect ke GitHub...${NC}\n"
+
+SSH_TEST_OUTPUT=$(ssh -T git@github.com 2>&1 || true)
+
+if echo "$SSH_TEST_OUTPUT" | grep -q "successfully authenticated"; then
+    print_success "GitHub SSH connection berhasil!"
+    echo "Output: $SSH_TEST_OUTPUT" | sed 's/^/    /'
+elif echo "$SSH_TEST_OUTPUT" | grep -q "authentication"; then
+    print_warning "Belum berhasil authenticate dengan GitHub"
+    print_info "Instruksi:"
+    echo "    1. Buka https://github.com/settings/ssh/new"
+    echo "    2. Paste public key dari atas"
+    echo "    3. Beri title: SSH Key VPS (atau sesuai keinginan)"
+    echo "    4. Click 'Add SSH key'"
+    echo "    5. Jalankan test lagi: ssh -T git@github.com"
+else
+    print_warning "GitHub SSH test menghasilkan output:"
+    echo "$SSH_TEST_OUTPUT" | sed 's/^/    /'
+fi
+
+# ============================================================================
+# SECTION 9: Create Git Hooks Template
+# ============================================================================
+print_header "9. Setup Git Hooks Template (Optional)"
+
+HOOKS_DIR="$USER_HOME/.git-hooks"
+mkdir -p "$HOOKS_DIR"
+
+# Pre-commit hook template for Node.js
+cat > "$HOOKS_DIR/pre-commit-nodejs" << 'EOF'
+#!/bin/bash
+# Pre-commit hook untuk Node.js projects
+
+echo "Running pre-commit checks..."
+
+# Check if npm is available
+if ! command -v npm &> /dev/null; then
+    echo "npm not found, skipping checks"
+    exit 0
+fi
+
+# Check for console.log dalam staged files
+if git diff --cached --name-only --diff-filter=ACM | grep -E '\.(js|jsx|ts|tsx)$'; then
+    echo "Checking for console.log statements..."
+    if git diff --cached | grep -E '^\+.*console\.(log|debug|info)'; then
+        echo "❌ console.log atau console.debug ditemukan dalam staged files!"
+        echo "Silakan hapus atau commit tanpa -a flag untuk melewati."
+        exit 1
+    fi
+fi
+
+echo "✓ Pre-commit checks passed"
+exit 0
+EOF
+
+chmod +x "$HOOKS_DIR/pre-commit-nodejs"
+
+print_success "Git hooks template dibuat di: $HOOKS_DIR"
+
+print_info "Untuk menggunakan hooks di project:"
+echo "    cd your-repo"
+echo "    mkdir -p .git/hooks"
+echo "    cp ~/.git-hooks/pre-commit-nodejs .git/hooks/pre-commit"
+echo "    chmod +x .git/hooks/pre-commit"
+
+# ============================================================================
+# SECTION 10: Verification Summary
+# ============================================================================
+print_header "10. Verifikasi dan Summary"
+
+echo -e "\n${BLUE}Git Configuration:${NC}\n"
+
+echo "    Git user.name:    $(git config --global user.name)"
+echo "    Git user.email:   $(git config --global user.email)"
+echo "    Default branch:   $(git config --global init.defaultBranch)"
+
+echo -e "\n${BLUE}SSH Configuration:${NC}\n"
+
+echo "    SSH Key:          $SSH_KEY_PATH"
+echo "    Public Key:       $SSH_KEY_PATH.pub"
+echo "    SSH Config:       $SSH_CONFIG"
+
+echo -e "\n${BLUE}File Permissions:${NC}\n"
+
+ls -lh "$SSH_KEY_PATH" | awk '{print "    Private: " $0}'
+ls -lh "$SSH_KEY_PATH.pub" | awk '{print "    Public:  " $0}'
+
+# ============================================================================
+# SECTION 11: Next Steps
+# ============================================================================
+print_header "11. Langkah Selanjutnya"
+
+cat << 'EOF'
+1. Setup SSH Key di GitHub (jika belum):
+   - Buka: https://github.com/settings/ssh/new
+   - Paste public key dari atas
+   - Click 'Add SSH key'
+
+2. Test koneksi:
+   ssh -T git@github.com
+
+3. Clone repository aplikasi:
+   cd ~/apps
+   git clone git@github.com:youruser/your-app-repo.git
+
+4. Jalankan tahap berikutnya untuk setup Nginx:
+   bash tahap4-nginx-multiapp-config.sh
+EOF
+
+echo ""
+print_header "✓ TAHAP 3 Selesai!"
+
+echo -e "${GREEN}GitHub dan Git configuration berhasil dikonfigurasi.${NC}"
+echo -e "Lanjut ke tahap berikutnya dengan perintah:\n"
+echo -e "  ${YELLOW}bash tahap4-nginx-multiapp-config.sh${NC}\n"
