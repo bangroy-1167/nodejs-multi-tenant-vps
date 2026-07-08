@@ -1,379 +1,599 @@
 # TAHAP 8: Deploy Aplikasi dari GitHub
 
-Panduan lengkap untuk deploy Node.js aplikasi dari GitHub repository ke VPS multi-app infrastructure.
-
----
-
 ## Overview
 
-Script `tahap8-deploy-github-app.sh` mengotomatisasi:
+**Tahap 8** adalah script otomatis untuk deploy Node.js aplikasi dari GitHub dengan support **staging dan production environment**.
 
-- ✅ Clone atau update repository dari GitHub
-- ✅ Setup environment variables (.env)
-- ✅ Install dependencies (npm install)
-- ✅ Build aplikasi (jika ada build script)
-- ✅ Copy ke production directory
-- ✅ Setup PM2 configuration
-- ✅ Start/restart aplikasi
-- ✅ Health check
-- ✅ Nginx integration instructions
+### Workflow
 
-**Designed untuk reusable**: Bisa deploy aplikasi1, aplikasi2, ..., aplikasi30 dengan script yang sama.
+```
+GitHub Repository
+        │
+        ↓ (git clone)
+
+repos/aplikasi1/              ← Source code (clean)
+        │
+        ↓ (cp -r)
+        
+ staging/aplikasi1/  OR  production/aplikasi1/
+        │                       │
+        ↓ (npm install)        ↓ (npm install)
+      node_modules            node_modules
+        │                       │
+        ↓ (npm run build)      ↓ (npm run build)
+       dist/                   dist/
+        │                       │
+        ↓ (PM2 start)         ↓ (PM2 start)
+   localhost:300X          localhost:300X (via Nginx)
+   (development)            (production)
+```
 
 ---
 
-## Prerequisites
+## Directory Structure
 
-Pastikan tahap-tahap berikut sudah **completed**:
-
-- ✅ **Tahap 1**: Initial Setup (SSH, firewall, fail2ban)
-- ✅ **Tahap 2**: Node.js, PM2, Nginx terinstall
-- ✅ **Tahap 3**: GitHub SSH key configured
-- ✅ **Tahap 4**: Nginx multi-app configuration
-- ✅ **Tahap 6**: PM2 ecosystem setup
-- ✅ **Tahap 7**: Monitoring & backup
+```
+~/apps/
+├── repos/
+│   ├── aplikasi1/        ← Clone dari GitHub
+│   ├── aplikasi2/
+│   └── aplikasi3/
+├── staging/
+│   ├── aplikasi1/        ← Testing environment
+│   └── aplikasi2/
+├── production/
+│   ├── aplikasi1/        ← Live environment
+│   └── aplikasi2/
+├── nginx-configs/    ← Nginx templates
+└── pm2-configs/      ← PM2 ecosystem configs
+```
 
 ---
 
 ## Quick Start
 
-### Deploy Aplikasi Pertama (aplikasi1)
+### First Deploy (Staging)
 
 ```bash
-# Login sebagai development user
-ssh -p 2222 develme_rf@43.157.201.129
-
-# Jalankan script
-bash tahap8-deploy-github-app.sh
+bash tahap8-deploy-github-app.sh \
+  --app aplikasi1 \
+  --repo git@github.com:bangroy-1167/my-nodejs-app.git \
+  --env staging
 ```
 
-**Interactive prompts:**
+**Prompts:**
+- `Edit .env file sekarang?` - Pilih `y` untuk konfigurasi environment
+- `Restart?` - Pilih `y` untuk start aplikasi
+
+**Output:**
 ```
-Nama aplikasi [aplikasi1]: aplikasi1
-GitHub repository URL: git@github.com:bangroy-1167/my-nodejs-app.git
+✓ Repository di-clone: ~/apps/repos/aplikasi1
+✓ Aplikasi di-copy ke: ~/apps/staging/aplikasi1
+✓ Dependencies terinstall
+✓ Aplikasi berhasil di-build
+✓ Aplikasi started dengan PM2: staging-aplikasi1
+✓ Port 3001 is listening
+✓ HTTP health check passed
 ```
 
-**Selesai!** Aplikasi siap di production directory.
-
----
-
-### Deploy Aplikasi Kedua (aplikasi2)
+### Test di Staging
 
 ```bash
-bash tahap8-deploy-github-app.sh --app aplikasi2
+# View logs
+pm2 logs staging-aplikasi1
+
+# Monitor resource
+pm2 monit
+
+# Direct test
+curl http://localhost:3001
 ```
 
-Script otomatis extract port (3002), setup directory, etc.
+### Deploy to Production (After Staging OK)
+
+```bash
+bash tahap8-deploy-github-app.sh --app aplikasi1 --env production --update
+```
+
+**Output:**
+```
+✓ Repository source ada: ~/apps/repos/aplikasi1
+✓ Aplikasi di-copy ke: ~/apps/production/aplikasi1
+✓ Dependencies terinstall
+✓ Aplikasi berhasil di-build
+✓ Aplikasi started dengan PM2: aplikasi1
+✓ Port 3001 is listening
+```
+
+### Enable in Nginx
+
+```bash
+# Pilih satu:
+
+# 1. Path-based
+sudo ln -s /etc/nginx/sites-available/app-aplikasi1-path \
+           /etc/nginx/sites-enabled/
+
+# 2. Subdomain-based
+sudo ln -s /etc/nginx/sites-available/app-aplikasi1-subdomain \
+           /etc/nginx/sites-enabled/
+
+# 3. Hybrid (both)
+sudo ln -s /etc/nginx/sites-available/app-aplikasi1-hybrid \
+           /etc/nginx/sites-enabled/
+
+# Reload Nginx
+sudo systemctl reload nginx
+```
+
+### Test di Production
+
+```bash
+# Via Nginx
+curl https://aplikasi1.sv1.thinking.my.id  # subdomain
+curl https://sv1.thinking.my.id/aplikasi1  # path
+
+# Direct
+curl http://localhost:3001
+
+# Logs
+pm2 logs aplikasi1
+```
 
 ---
 
 ## Usage Patterns
 
-### 1. Fresh Deployment (Default)
-
-```bash
-bash tahap8-deploy-github-app.sh
-```
-
-- Prompt untuk app name + GitHub URL
-- Clone repository
-- Setup environment
-- Install dependencies
-- Start dengan PM2
-
-### 2. Update Existing Application
-
-```bash
-bash tahap8-deploy-github-app.sh --app aplikasi1 --update
-```
-
-- Pull latest code dari GitHub
-- npm install (update dependencies)
-- Rebuild jika ada build script
-- Restart PM2
-
-### 3. Quick Deploy dengan Semua Parameter
+### Pattern 1: Fresh Deploy (New Application)
 
 ```bash
 bash tahap8-deploy-github-app.sh \
-  --app aplikasi1 \
-  --repo git@github.com:bangroy-1167/my-app.git
+  --app aplikasi2 \
+  --repo git@github.com:bangroy-1167/app2.git \
+  --env production
 ```
 
-Tidak ada prompt, langsung execute.
+**Alur:**
+1. Clone repo ke `repos/aplikasi2/`
+2. Copy ke `production/aplikasi2/`
+3. Install dependencies
+4. Build
+5. Start dengan PM2 nama `aplikasi2`
 
-### 4. Bulk Deploy Multiple Apps
+### Pattern 2: Staging to Production (Tested)
 
 ```bash
-for i in {1..5}; do
-  bash tahap8-deploy-github-app.sh --app aplikasi$i
+# Step 1: Deploy ke staging
+bash tahap8-deploy-github-app.sh --app aplikasi3 \
+  --repo git@github.com:user/app3.git --env staging
+
+# Step 2: Test...
+pm2 logs staging-aplikasi3
+
+# Step 3: Approve → Deploy to production
+bash tahap8-deploy-github-app.sh --app aplikasi3 --env production --update
+```
+
+**Catatan:** `--update` flag:
+- Tidak clone ulang, pakai existing repo di `repos/`
+- Copy ulang dari repo ke target environment
+- Reinstall dependencies (fresh)
+- Restart PM2 process
+
+### Pattern 3: Update Existing Application
+
+```bash
+# Scenario: Code update di GitHub
+git -C ~/apps/repos/aplikasi1 pull  # Update source
+
+# Deploy ulang ke production
+bash tahap8-deploy-github-app.sh --app aplikasi1 --env production --update
+```
+
+Atau one-liner:
+
+```bash
+cd ~/apps/repos/aplikasi1 && git pull && \
+bash ~/tahap8-deploy-github-app.sh --app aplikasi1 --env production --update
+```
+
+### Pattern 4: Redeploy Source (Fresh Clone)
+
+```bash
+# Kalau repo di server outdated, re-clone
+rm -rf ~/apps/repos/aplikasi1
+
+bash tahap8-deploy-github-app.sh \
+  --app aplikasi1 \
+  --repo git@github.com:bangroy-1167/app1.git \
+  --env production --update
+```
+
+### Pattern 5: Bulk Deploy Multiple Apps
+
+```bash
+#!/bin/bash
+# bulk-deploy.sh
+
+APPS=("app1:git@github.com:user/app1.git" \
+      "app2:git@github.com:user/app2.git" \
+      "app3:git@github.com:user/app3.git")
+
+for APP_REPO in "${APPS[@]}"; do
+    APP=${APP_REPO%%:*}
+    REPO=${APP_REPO#*:}
+    
+    echo "Deploying $APP..."
+    bash ~/tahap8-deploy-github-app.sh \
+        --app $APP \
+        --repo $REPO \
+        --env production
+    
+    sleep 5  # Jeda antar deploy
 done
 ```
 
-Deploy aplikasi1 sampai aplikasi5 otomatis.
-
----
-
-## File Structure After Deployment
-
-```
-/home/develme_rf/
-├── apps/
-│   ├── repos/
-│   │   ├── aplikasi1/              ← Repository clone
-│   │   │   ├── .git/
-│   │   │   ├── src/
-│   │   │   ├── node_modules/
-│   │   │   ├── package.json
-│   │   │   └── .env.example
-│   │   ├── aplikasi2/
-│   │   └── aplikasi3/
-│   │
-│   ├── production/
-│   │   ├── aplikasi1/              ← Production symlink
-│   │   │   ├── src/
-│   │   │   ├── node_modules → ../repos/aplikasi1/node_modules
-│   │   │   ├── .env
-│   │   │   └── package.json
-│   │   ├── aplikasi2/
-│   │   └── aplikasi3/
-│   │
-│   ├── logs/
-│   │   ├── aplikasi1/
-│   │   │   ├── out.log
-│   │   │   └── error.log
-│   │   ├── aplikasi2/
-│   │   └── aplikasi3/
-│   │
-│   └── nginx-configs/
-│       ├── APP-MAPPING.md
-│       ├── app-aplikasi1-path
-│       ├── app-aplikasi1-subdomain
-│       └── app-aplikasi1-hybrid
-│
-├── pm2-configs/
-│   ├── aplikasi1.config.js
-│   ├── aplikasi1.env
-│   ├── aplikasi2.config.js
-│   └── aplikasi2.env
-│
-└── [monitoring scripts]
+Run:
+```bash
+bash bulk-deploy.sh
 ```
 
 ---
 
-## Environment File (.env)
+## Command Reference
 
-Script otomatis membuat `.env` file dengan prioritas:
+### Deploy Fresh (Clone + Setup + Start)
 
-1. **Dari repository**: `<repo>/.env.example`
-2. **Dari template**: `/home/develme_rf/pm2-configs/<APP_NAME>.env`
-3. **Generated**: Script buat baru dengan defaults
+```bash
+bash tahap8-deploy-github-app.sh \
+  --app <nama> \
+  --repo <github-url> \
+  --env staging|production
+```
 
-### Default Environment Variables
+### Deploy Update (Skip Clone, Fresh Copy)
 
-```env
+```bash
+bash tahap8-deploy-github-app.sh \
+  --app <nama> \
+  --env staging|production \
+  --update
+```
+
+### Deploy with Skip Install (Faster)
+
+```bash
+bash tahap8-deploy-github-app.sh \
+  --app <nama> \
+  --env production \
+  --update \
+  --skip-install
+```
+
+---
+
+## Environment Variables (.env)
+
+### Staging vs Production
+
+**staging/.env**
+```ini
+NODE_ENV=staging
+PORT=3001
+APP_NAME=aplikasi1
+DATABASE_URL=staging-db.example.com
+LOG_LEVEL=debug
+```
+
+**production/.env**
+```ini
 NODE_ENV=production
 PORT=3001
 APP_NAME=aplikasi1
-APP_URL=https://aplikasi1.sv1.thinking.my.id
-
-LOG_LEVEL=info
-LOG_DIR=/home/develme_rf/apps/logs/aplikasi1
+DATABASE_URL=prod-db.example.com
+LOG_LEVEL=warn
 ```
 
-### Customize .env
+### How Script Handles .env
 
-Script bertanya: **"Edit .env file sekarang? (y/n)"**
-
-Pilih `y` atau edit manual nanti:
-
-```bash
-nano /home/develme_rf/apps/production/aplikasi1/.env
-```
+1. Cek `.env` di target directory
+2. Kalau tidak ada:
+   - Cek `.env.example` di repo → Copy
+   - Atau create basic `.env`
+3. Prompt untuk edit manual
+4. Done
 
 ---
 
-## PM2 Configuration
+## PM2 Management
 
-Script otomatis generate PM2 config di `/home/develme_rf/pm2-configs/<APP_NAME>.config.js`
-
-Includes cluster mode, auto-restart, memory limits, dan logging.
-
----
-
-## Health Check & Monitoring
-
-Setelah deployment, script otomatis:
-
-1. ✅ Test port listening
-2. ✅ Test HTTP endpoint
-3. ✅ Verify PM2 status
-
-### Manual Health Check
+### View All Processes
 
 ```bash
-# View logs
+pm2 list
+```
+
+Output:
+```
+│ id  │ name                │ status  │ ↑ │ ↑        │
+├───┼──────────────┼──────┼───┼───────────┬─
+what the fuck
+0  │ staging-aplikasi1   │ online  │ │ 25.7 MB  │
+1  │ aplikasi1           │ online  │ │ 28.3 MB  │
+2  │ aplikasi2           │ online  │ │ 26.1 MB  │
+```
+
+### View Logs
+
+```bash
+# Live logs
 pm2 logs aplikasi1
 
-# Monitor
-pm2 monit
+# Last 50 lines
+pm2 logs aplikasi1 --lines 50
 
-# Check status
-pm2 list
+# Filter errors only
+pm2 logs aplikasi1 --err
+```
+
+### Monitor Resource
+
+```bash
+pm2 monit
+```
+
+Display real-time CPU, memory, events untuk semua proses.
+
+### Restart/Stop/Delete
+
+```bash
+pm2 restart aplikasi1
+pm2 stop aplikasi1
+pm2 delete aplikasi1
+
+pm2 restart all
+pm2 stop all
 ```
 
 ---
 
 ## Nginx Integration
 
-Setelah aplikasi running, enable di Nginx:
+### Port Allocation
 
-### Path-Based
+Setiap aplikasi dapat port unik:
+- aplikasi1 → 3001
+- aplikasi2 → 3002
+- aplikasi30 → 3030
 
-```bash
-sudo ln -s /etc/nginx/sites-available/app-aplikasi1-path \
-           /etc/nginx/sites-enabled/
-sudo systemctl reload nginx
+### Routing Strategies
+
+#### Path-Based
+```
+https://sv1.thinking.my.id/aplikasi1 → localhost:3001
+https://sv1.thinking.my.id/aplikasi2 → localhost:3002
 ```
 
-URL: `https://sv1.thinking.my.id/aplikasi1`
+**Pro:** Single domain, simple DNS
+**Con:** Path in URL, app logic complexity
 
-### Subdomain-Based
-
-```bash
-sudo ln -s /etc/nginx/sites-available/app-aplikasi1-subdomain \
-           /etc/nginx/sites-enabled/
-sudo systemctl reload nginx
+#### Subdomain-Based
+```
+https://aplikasi1.sv1.thinking.my.id → localhost:3001
+https://aplikasi2.sv1.thinking.my.id → localhost:3002
 ```
 
-URL: `https://aplikasi1.sv1.thinking.my.id`
+**Pro:** Clean URLs, app isolation
+**Con:** Wildcard DNS + multiple certificates
 
-### Hybrid (Both)
-
+#### Hybrid
+Support keduanya! Pilih mana saat enable:
 ```bash
-sudo ln -s /etc/nginx/sites-available/app-aplikasi1-hybrid \
-           /etc/nginx/sites-enabled/
-sudo systemctl reload nginx
-```
-
----
-
-## Common Workflows
-
-### Deploy New App
-
-```bash
-bash tahap8-deploy-github-app.sh --app aplikasi1 \
-  --repo git@github.com:bangroy-1167/my-app.git
-
-sudo ln -s /etc/nginx/sites-available/app-aplikasi1-hybrid \
-           /etc/nginx/sites-enabled/
-sudo systemctl reload nginx
-
-curl https://aplikasi1.sv1.thinking.my.id
-```
-
-### Update Existing App
-
-```bash
-bash tahap8-deploy-github-app.sh --app aplikasi1 --update
-```
-
-### Change Environment Variables
-
-```bash
-nano /home/develme_rf/apps/production/aplikasi1/.env
-pm2 restart aplikasi1
-```
-
-### View Logs
-
-```bash
-pm2 logs aplikasi1
-tail -f /home/develme_rf/apps/logs/aplikasi1/error.log
-```
-
-### Rollback
-
-```bash
-cd /home/develme_rf/apps/repos/aplikasi1
-git log --oneline -10
-git checkout <commit_hash>
-npm install
-npm run build
-pm2 restart aplikasi1
+sudo ln -s /etc/nginx/sites-available/app-aplikasi1-hybrid /etc/nginx/sites-enabled/
 ```
 
 ---
 
 ## Troubleshooting
 
+### Build Failed
+
+```bash
+cd ~/apps/production/aplikasi1
+npm run build
+```
+
+Lihat error message.
+
 ### Port Already in Use
 
 ```bash
-sudo lsof -i :3001
-sudo kill -9 <PID>
+netstat -tuln | grep 3001
+
+# Kill existing process
+kill -9 <PID>
+
+# Atau via PM2
+pm2 delete aplikasi1
+pm2 start ~/pm2-configs/aplikasi1.js
+```
+
+### .env Issues
+
+```bash
+# Check .env
+cat ~/apps/production/aplikasi1/.env
+
+# Edit
+nano ~/apps/production/aplikasi1/.env
+
+# Restart
 pm2 restart aplikasi1
 ```
 
-### GitHub SSH Failed
+### GitHub SSH Auth Failed
 
 ```bash
+# Test SSH
 ssh -T git@github.com
-bash tahap3-github-git-setup.sh  # Re-run if needed
+
+# Should output:
+# Hi bangroy-1167! You've successfully authenticated...
 ```
 
-### Application Not Responding
+Jika fail, verify SSH key sudah di GitHub:
+```bash
+cat ~/.ssh/githubssh.pub
+# Copy → https://github.com/settings/ssh/new
+```
 
+### Health Check Failed
+
+Salah satu:
+1. App tidak listening di port yang benar
+2. Dependencies incomplete
+3. .env configuration salah
+
+Debug:
 ```bash
 pm2 logs aplikasi1
-pm2 restart aplikasi1
+cat ~/apps/production/aplikasi1/.env
 netstat -tuln | grep 3001
-curl http://localhost:3001/
-```
-
-### Nginx Not Forwarding
-
-```bash
-sudo nginx -t
-sudo tail -f /var/log/nginx/error.log
-curl http://localhost:3001/
-ls -la /etc/nginx/sites-enabled/app-aplikasi1-*
 ```
 
 ---
 
 ## Best Practices
 
-1. **Keep .env out of git** - Use `.env.example` for reference
-2. **Implement health check endpoint** - Script tests it
-3. **Use structured logging** - Help with debugging
-4. **Never commit secrets** - Use environment variables
-5. **Monitor resource usage** - Check PM2 monit regularly
+1. **Always test in staging first**
+   ```bash
+   --env staging → verify → --env production
+   ```
+
+2. **Keep repo/ clean**
+   - repos/ = source only (read-only perspective)
+   - staging/prod/ = working copies
+
+3. **Maintain .env separately**
+   - staging/.env ≠ production/.env
+   - Use different credentials/databases
+
+4. **Use --update flag wisely**
+   - Fresh code from repo
+   - Fresh node_modules
+   - Rebuild always
+
+5. **Monitor PM2 regularly**
+   ```bash
+   pm2 monit
+   pm2 logs <app> --lines 100
+   ```
+
+6. **Backup before major updates**
+   ```bash
+   cp -r ~/apps/production/aplikasi1 ~/backup/aplikasi1.bak
+   ```
 
 ---
 
-## Port Reference
+## Real-World Workflow
 
-| Aplikasi | Port | Path | Subdomain |
-|----------|------|------|-----------|
-| aplikasi1 | 3001 | /aplikasi1 | aplikasi1.sv1.thinking.my.id |
-| aplikasi2 | 3002 | /aplikasi2 | aplikasi2.sv1.thinking.my.id |
-| aplikasi3 | 3003 | /aplikasi3 | aplikasi3.sv1.thinking.my.id |
-| ... | ... | ... | ... |
-| aplikasi30 | 3030 | /aplikasi30 | aplikasi30.sv1.thinking.my.id |
+### Day 1: Initial Deploy
+
+```bash
+# Clone repo, setup staging
+bash tahap8-deploy-github-app.sh --app myapp --repo <url> --env staging
+
+# Test...
+pm2 logs staging-myapp
+
+# Approved, promote to production
+bash tahap8-deploy-github-app.sh --app myapp --env production --update
+
+# Enable Nginx
+sudo ln -s /etc/nginx/sites-available/app-myapp-hybrid /etc/nginx/sites-enabled/
+sudo systemctl reload nginx
+
+# Live!
+curl https://myapp.sv1.thinking.my.id
+```
+
+### Day 7: Code Update
+
+```bash
+# Pull latest from GitHub
+cd ~/apps/repos/myapp
+git pull origin main
+
+# Deploy to staging first
+bash ~/tahap8-deploy-github-app.sh --app myapp --env staging --update
+
+# Test new features...
+pm2 logs staging-myapp
+
+# Looks good, deploy production
+bash ~/tahap8-deploy-github-app.sh --app myapp --env production --update
+
+# Already in Nginx, just verify
+curl https://myapp.sv1.thinking.my.id
+```
+
+### Day 30: Hotfix
+
+```bash
+# Fix bug in GitHub
+# Immediately deploy production (skip staging)
+cd ~/apps/repos/myapp && git pull && \
+bash ~/tahap8-deploy-github-app.sh --app myapp --env production --update
+
+# Monitor closely
+pm2 logs myapp --follow
+pm2 monit
+```
 
 ---
 
-## Next Steps
+## Advanced
 
-1. Deploy aplikasi1
-2. Enable Nginx
-3. Test aplikasi
-4. Deploy aplikasi2, 3, dst
-5. Return ke Tahap 5 untuk HTTPS Wildcard setup
+### Custom Build Commands
+
+Jika aplikasi punya custom build:
+
+```bash
+cd ~/apps/production/aplikasi1
+npm run build:prod
+# or
+make build
+# or
+go build
+```
+
+Script hanya trigger `npm run build` otomatis. Untuk custom, edit PM2 config atau run manual sebelum PM2 start.
+
+### Multi-Language Support
+
+Script agnostic, asal ada:
+- `package.json` + `npm` (Node.js) ✓
+- `requirements.txt` + `pip` (Python) - Perlu custom
+- `go.mod` (Go) - Perlu custom
+
+Untuk non-Node.js, modify script atau run deployment manual.
+
+### Chained Deployments
+
+```bash
+#!/bin/bash
+for i in {1..5}; do
+    bash tahap8-deploy-github-app.sh --app aplikasi$i --env production --update --skip-install
+done
+```
+
+Quick update untuk multiple apps (skip install untuk speed).
 
 ---
 
-**Version**: 1.0 | **Last Updated**: July 8, 2026
+## Reference
+
+- [PM2 Documentation](https://pm2.keymetrics.io/)
+- [Nginx Proxy Configuration](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)
+- [Node.js Environment Variables](https://nodejs.org/en/docs/guides/nodejs-docker-webapp/)
