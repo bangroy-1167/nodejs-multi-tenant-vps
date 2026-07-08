@@ -1,26 +1,25 @@
 #!/bin/bash
 
-################################################################################
+#################################################################
 # TAHAP 1: INITIAL VPS SETUP - Ubuntu 24.04
-# VPS Multi-App Setup Script
-# Purpose: System update, security hardening, user creation, and firewall setup
-# Auto-detects public IP and uses generic domain placeholder for public repo
-################################################################################
+# Multi-App Node.js/React Development VPS
+# Version: 2.0 (Cleaned)
+#################################################################
 
 set -e
 
-# Colors for output
+# Color definitions
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Functions
+# Function to print colored output
 print_header() {
-    echo -e "\n${BLUE}========================================${NC}"
+    echo -e "${BLUE}========================================${NC}"
     echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}========================================${NC}\n"
+    echo -e "${BLUE}========================================${NC}"
 }
 
 print_success() {
@@ -31,401 +30,333 @@ print_error() {
     echo -e "${RED}✗ $1${NC}"
 }
 
-print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}"
-}
-
 print_info() {
-    echo -e "${BLUE}ℹ $1${NC}"
+    echo -e "${YELLOW}ℹ $1${NC}"
 }
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
-   print_error "This script must be run as root"
-   exit 1
+    print_error "This script must be run as root"
+    exit 1
 fi
 
-################################################################################
-# AUTO-DETECT PUBLIC IP
-################################################################################
-
+# Detect public IP
 print_info "Detecting public IP address..."
-VPS_IP=$(curl -s https://api.ipify.org || curl -s http://checkip.amazonaws.com || hostname -I | awk '{print $1}')
-if [ -z "$VPS_IP" ] || [ "$VPS_IP" == "" ]; then
-    VPS_IP="your-vps-ippub"
-    print_warning "Could not auto-detect IP. Please set manually."
-else
-    print_success "Detected IP: $VPS_IP"
+PUBLIC_IP=$(curl -s https://api.ipify.org)
+if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP="your-public-ip"
 fi
+print_success "Detected IP: $PUBLIC_IP"
 
-# Generic domain placeholder for public repository
-DOMAIN_PLACEHOLDER="domainaplikasimu.id"
-
-################################################################################
-# START: TAHAP 1 SETUP
-################################################################################
+# Default values
+DEFAULT_SSH_PORT=2222
+DEFAULT_DEV_USER=devel_me
+DEFAULT_TIMEZONE="Asia/Jakarta"
+DEFAULT_ADMIN_EMAIL="admin@example.com"
+DOMAIN_TEMPLATE="domainaplikasimu.id"
 
 print_header "TAHAP 1: INITIAL VPS SETUP"
 
-# ============================================================================
-# STEP 1: COLLECT USER INPUTS
-# ============================================================================
 print_header "STEP 1: Gathering Configuration Information"
 
-echo -e "${BLUE}Detected Configuration:${NC}"
-echo "  VPS IP: ${GREEN}$VPS_IP${NC}"
-echo "  Domain Template: ${GREEN}$DOMAIN_PLACEHOLDER${NC}"
+echo ""
+echo "Detected Configuration:"
+echo -e "  VPS IP: ${GREEN}${PUBLIC_IP}${NC}"
+echo -e "  Domain Template: ${GREEN}${DOMAIN_TEMPLATE}${NC}"
 echo ""
 
-# SSH Port
-read -p "$(echo -e ${YELLOW}Enter new SSH port (default: 2222):${NC} )" SSH_PORT
-SSH_PORT=${SSH_PORT:-2222}
-print_info "SSH port will be changed to: $SSH_PORT"
+# SSH Port configuration
+echo -n "Enter SSH port (default: $DEFAULT_SSH_PORT): "
+read SSH_PORT
+SSH_PORT=${SSH_PORT:-$DEFAULT_SSH_PORT}
+print_info "SSH Port set to: $SSH_PORT"
 
-# Development Username
-read -p "$(echo -e ${YELLOW}Enter development username (default: devel_me):${NC} )" DEV_USERNAME
-DEV_USERNAME=${DEV_USERNAME:-devel_me}
-print_info "Development user will be: $DEV_USERNAME"
+# Development user configuration
+echo -n "Enter development username (default: $DEFAULT_DEV_USER): "
+read DEV_USER
+DEV_USER=${DEV_USER:-$DEFAULT_DEV_USER}
+print_info "Development user set to: $DEV_USER"
 
-# Timezone
-read -p "$(echo -e ${YELLOW}Enter timezone (e.g., Asia/Jakarta, UTC):${NC} )" TIMEZONE
-TIMEZONE=${TIMEZONE:-UTC}
-print_info "Timezone will be set to: $TIMEZONE"
+# Timezone configuration
+echo -n "Enter timezone (default: $DEFAULT_TIMEZONE): "
+read TIMEZONE
+TIMEZONE=${TIMEZONE:-$DEFAULT_TIMEZONE}
+print_info "Timezone set to: $TIMEZONE"
 
-# Email for Let's Encrypt (future use)
-read -p "$(echo -e ${YELLOW}Enter email for SSL certificates (e.g., admin@example.com):${NC} )" ADMIN_EMAIL
-print_info "Admin email: $ADMIN_EMAIL"
+# Admin email configuration
+echo -n "Enter admin email (default: $DEFAULT_ADMIN_EMAIL): "
+read ADMIN_EMAIL
+ADMIN_EMAIL=${ADMIN_EMAIL:-$DEFAULT_ADMIN_EMAIL}
+print_info "Admin email set to: $ADMIN_EMAIL"
 
 # Confirmation
 echo ""
-echo -e "${YELLOW}Configuration Summary:${NC}"
-echo "  VPS IP: $VPS_IP"
-echo "  Domain Template: $DOMAIN_PLACEHOLDER"
+echo -e "${YELLOW}Summary of configuration:${NC}"
 echo "  SSH Port: $SSH_PORT"
-echo "  Dev Username: $DEV_USERNAME"
+echo "  Development User: $DEV_USER"
 echo "  Timezone: $TIMEZONE"
 echo "  Admin Email: $ADMIN_EMAIL"
 echo ""
-read -p "$(echo -e ${YELLOW}Continue with these settings? (y/n):${NC} )" -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+echo -n "Continue with these settings? (yes/no): "
+read CONFIRM
+if [[ "$CONFIRM" != "yes" ]]; then
     print_error "Setup cancelled"
     exit 1
 fi
 
-# ============================================================================
-# STEP 2: SYSTEM UPDATE
-# ============================================================================
-print_header "STEP 2: System Update and Upgrade"
+print_header "STEP 2: System Update & Essential Packages"
 
-print_info "Updating package lists..."
+print_info "Updating system packages..."
 apt update
-
-print_info "Upgrading installed packages..."
 apt upgrade -y
 
-print_info "Installing build essentials..."
-apt install -y build-essential curl wget git htop net-tools nano vim
+print_info "Installing essential packages..."
+apt install -y \
+    curl \
+    wget \
+    git \
+    htop \
+    glances \
+    iotop \
+    build-essential \
+    software-properties-common \
+    apt-transport-https \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    net-tools \
+    telnet \
+    nano \
+    vim \
+    ufw \
+    fail2ban \
+    unzip \
+    zip
 
-print_info "Installing additional utilities..."
-apt install -y unzip tar gzip bzip2 zip
+print_success "System update completed"
 
-print_success "System update and upgrade completed"
+print_header "STEP 3: Create Development User"
 
-# ============================================================================
-# STEP 3: SET TIMEZONE
-# ============================================================================
-print_header "STEP 3: Setting Timezone"
-
-timedatectl set-timezone "$TIMEZONE"
-print_success "Timezone set to: $(timedatectl | grep 'Time zone')"
-
-# ============================================================================
-# STEP 4: CREATE DEVELOPMENT USER
-# ============================================================================
-print_header "STEP 4: Creating Development User"
-
-if id "$DEV_USERNAME" &>/dev/null; then
-    print_warning "User $DEV_USERNAME already exists, skipping user creation"
+if id "$DEV_USER" &>/dev/null; then
+    print_info "User $DEV_USER already exists"
 else
-    print_info "Creating user: $DEV_USERNAME"
-    useradd -m -s /bin/bash "$DEV_USERNAME"
-    print_success "User $DEV_USERNAME created"
-    
-    # Add to sudoers
-    print_info "Adding $DEV_USERNAME to sudoers..."
-    usermod -aG sudo "$DEV_USERNAME"
-    print_success "$DEV_USERNAME added to sudoers"
+    print_info "Creating user $DEV_USER..."
+    useradd -m -s /bin/bash "$DEV_USER"
+    usermod -aG sudo "$DEV_USER"
+    print_success "User $DEV_USER created with sudo access"
 fi
 
-# Create .ssh directory
-print_info "Setting up SSH directory for $DEV_USERNAME..."
-mkdir -p /home/"$DEV_USERNAME"/.ssh
-chmod 700 /home/"$DEV_USERNAME"/.ssh
-chown "$DEV_USERNAME":"$DEV_USERNAME" /home/"$DEV_USERNAME"/.ssh
-touch /home/"$DEV_USERNAME"/.ssh/authorized_keys
-chmod 600 /home/"$DEV_USERNAME"/.ssh/authorized_keys
-chown "$DEV_USERNAME":"$DEV_USERNAME" /home/"$DEV_USERNAME"/.ssh/authorized_keys
-print_success "SSH directory configured for $DEV_USERNAME"
+# Create .ssh directory for development user
+DEV_HOME="/home/$DEV_USER"
+DEV_SSH_DIR="$DEV_HOME/.ssh"
 
-# ============================================================================
-# STEP 5: SSH HARDENING
-# ============================================================================
-print_header "STEP 5: SSH Hardening"
+mkdir -p "$DEV_SSH_DIR"
+chmod 700 "$DEV_SSH_DIR"
+chown "$DEV_USER:$DEV_USER" "$DEV_SSH_DIR"
 
-# Backup original sshd_config
-print_info "Backing up original sshd_config..."
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%s)
-print_success "Backup created"
+print_info "SSH directory created for $DEV_USER"
 
-# Update SSH configuration
-print_info "Hardening SSH configuration..."
+print_header "STEP 4: Timezone Configuration"
 
-# Use sed to update SSH config
+print_info "Setting timezone to $TIMEZONE..."
+timedatectl set-timezone "$TIMEZONE"
+print_success "Timezone configured"
+
+print_header "STEP 5: SSH Configuration"
+
+print_info "Backing up original SSH config..."
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+
+print_info "Configuring SSH security..."
+cat > /tmp/ssh_config_patch.txt <<'EOF'
+Port PORT_PLACEHOLDER
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+MaxAuthTries 3
+MaxSessions 10
+ClientAliveInterval 300
+ClientAliveCountMax 2
+AllowUsers USERNAME_PLACEHOLDER
+EOF
+
+sed -i "s/PORT_PLACEHOLDER/$SSH_PORT/" /tmp/ssh_config_patch.txt
+sed -i "s/USERNAME_PLACEHOLDER/$DEV_USER/" /tmp/ssh_config_patch.txt
+
+# Apply SSH configuration
 sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
 sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-sed -i "s/^#PermitRootLogin yes/PermitRootLogin no/" /etc/ssh/sshd_config
 sed -i "s/^PermitRootLogin yes/PermitRootLogin no/" /etc/ssh/sshd_config
-sed -i "s/^#PasswordAuthentication yes/PasswordAuthentication no/" /etc/ssh/sshd_config
+sed -i "s/^#PermitRootLogin no/PermitRootLogin no/" /etc/ssh/sshd_config
 sed -i "s/^PasswordAuthentication yes/PasswordAuthentication no/" /etc/ssh/sshd_config
-sed -i "s/^#PubkeyAuthentication no/PubkeyAuthentication yes/" /etc/ssh/sshd_config
+sed -i "s/^#PasswordAuthentication no/PasswordAuthentication no/" /etc/ssh/sshd_config
+sed -i "s/^#PubkeyAuthentication yes/PubkeyAuthentication yes/" /etc/ssh/sshd_config
 
-# Add specific configurations if not present
-if ! grep -q "AllowUsers" /etc/ssh/sshd_config; then
-    echo "AllowUsers $DEV_USERNAME" >> /etc/ssh/sshd_config
+# Add AllowUsers if not exists
+if ! grep -q "^AllowUsers" /etc/ssh/sshd_config; then
+    echo "AllowUsers $DEV_USER" >> /etc/ssh/sshd_config
 fi
 
-if ! grep -q "X11Forwarding no" /etc/ssh/sshd_config; then
-    echo "X11Forwarding no" >> /etc/ssh/sshd_config
-fi
-
-if ! grep -q "MaxAuthTries 3" /etc/ssh/sshd_config; then
-    echo "MaxAuthTries 3" >> /etc/ssh/sshd_config
-fi
-
-# Validate SSH config
-if sshd -t > /dev/null 2>&1; then
+# Test SSH config
+sshd -t
+if [[ $? -eq 0 ]]; then
     print_success "SSH configuration is valid"
     systemctl restart ssh
     print_success "SSH service restarted"
 else
-    print_error "SSH configuration validation failed!"
-    print_info "Restoring original sshd_config..."
-    cp /etc/ssh/sshd_config.backup.* /etc/ssh/sshd_config
+    print_error "SSH configuration has errors, restoring backup..."
+    cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
     systemctl restart ssh
     exit 1
 fi
 
-print_info "SSH Configuration Applied:"
-echo "  Port: $SSH_PORT"
-echo "  PermitRootLogin: no"
-echo "  PasswordAuthentication: no"
-echo "  AllowUsers: $DEV_USERNAME"
+print_header "STEP 6: Firewall Configuration"
 
-# ============================================================================
-# STEP 6: INSTALL AND CONFIGURE FAIL2BAN
-# ============================================================================
-print_header "STEP 6: Installing and Configuring Fail2Ban"
+print_info "Enabling UFW firewall..."
+ufw --force enable
 
-print_info "Installing Fail2Ban..."
-apt install -y fail2ban
+print_info "Setting firewall rules..."
+ufw default deny incoming
+ufw default allow outgoing
 
-# Create local jail configuration
+ufw allow "$SSH_PORT/tcp"
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw allow 3000:3020/tcp
+
+print_success "Firewall configured"
+
+print_header "STEP 7: Fail2Ban Configuration"
+
 print_info "Configuring Fail2Ban..."
-cat > /etc/fail2ban/jail.local << EOF
+
+cat > /etc/fail2ban/jail.local <<EOF
 [DEFAULT]
 bantime = 3600
 findtime = 600
 maxretry = 5
-destemail = $ADMIN_EMAIL
-sendername = Fail2Ban
-action = %(action_mwl)s
 
 [sshd]
 enabled = true
 port = $SSH_PORT
-logpath = %(sshd_log)s
+filter = sshd
+logpath = /var/log/auth.log
 maxretry = 3
 bantime = 7200
 
-[nginx-http-auth]
+[sshd-ddos]
 enabled = true
-
-[nginx-limit-req]
-enabled = true
+port = $SSH_PORT
+filter = sshd-ddos
+logpath = /var/log/auth.log
+maxretry = 10
+bantime = 3600
+findtime = 600
+action = iptables-multiport[name=SSH, port="ssh,http,https"]
 EOF
 
-print_success "Fail2Ban configuration created"
+systemctl restart fail2ban
+print_success "Fail2Ban configured"
 
-systemctl enable fail2ban
-systemctl start fail2ban
-print_success "Fail2Ban enabled and started"
+print_header "STEP 8: Directory Structure Setup"
 
-# ============================================================================
-# STEP 7: FIREWALL SETUP (UFW)
-# ============================================================================
-print_header "STEP 7: Firewall Setup with UFW"
+print_info "Creating application directory structure..."
 
-# Enable UFW
-print_info "Enabling UFW firewall..."
-ufw --force enable
+# Root directories
+mkdir -p /home/$DEV_USER/apps
+mkdir -p /home/$DEV_USER/apps/repos
+mkdir -p /home/$DEV_USER/apps/staging
+mkdir -p /home/$DEV_USER/apps/production
+mkdir -p /home/$DEV_USER/logs
+mkdir -p /home/$DEV_USER/backups
+mkdir -p /home/$DEV_USER/config
+mkdir -p /home/$DEV_USER/scripts
 
-# Default policies
-ufw default deny incoming
-ufw default allow outgoing
-print_success "Default firewall policies set"
+# Set proper permissions
+chown -R "$DEV_USER:$DEV_USER" /home/$DEV_USER/apps
+chown -R "$DEV_USER:$DEV_USER" /home/$DEV_USER/logs
+chown -R "$DEV_USER:$DEV_USER" /home/$DEV_USER/backups
+chown -R "$DEV_USER:$DEV_USER" /home/$DEV_USER/config
+chown -R "$DEV_USER:$DEV_USER" /home/$DEV_USER/scripts
 
-# Allow SSH on new port
-print_info "Allowing SSH on port $SSH_PORT..."
-ufw allow "$SSH_PORT"/tcp
+chmod 755 /home/$DEV_USER/apps
+chmod 755 /home/$DEV_USER/logs
+chmod 755 /home/$DEV_USER/backups
+chmod 755 /home/$DEV_USER/config
+chmod 755 /home/$DEV_USER/scripts
 
-# Allow HTTP and HTTPS
-print_info "Allowing HTTP and HTTPS..."
-ufw allow 80/tcp
-ufw allow 443/tcp
+print_success "Directory structure created"
 
-# Allow Wireguard (if using standard port)
-print_info "Allowing Wireguard (51820)..."
-ufw allow 51820/udp
+print_header "STEP 9: System Limits Configuration"
 
-# Allow app ports range (3001-3020 for React apps)
-print_info "Allowing application ports (3001-3020)..."
-ufw allow 3001:3020/tcp
+print_info "Increasing file descriptor limits..."
 
-# Allow Webmin (if installed)
-print_info "Allowing Webmin (10000)..."
-ufw allow 10000/tcp
+cat >> /etc/security/limits.conf <<EOF
 
-# Reload firewall
-ufw reload
-print_success "Firewall configuration applied"
+# Development User Limits
+$DEV_USER soft nofile 65536
+$DEV_USER hard nofile 65536
+$DEV_USER soft nproc 32768
+$DEV_USER hard nproc 32768
+EOF
 
-print_info "UFW Rules Summary:"
-ufw status numbered
+print_success "System limits configured"
 
-# ============================================================================
-# STEP 8: CREATE APPLICATION DIRECTORIES
-# ============================================================================
-print_header "STEP 8: Creating Application Directories"
+print_header "STEP 10: Basic System Security"
 
-print_info "Creating app directories..."
-mkdir -p /home/"$DEV_USERNAME"/apps
-mkdir -p /home/"$DEV_USERNAME"/pm2
-mkdir -p /home/"$DEV_USERNAME"/logs
-mkdir -p /home/"$DEV_USERNAME"/backups
+print_info "Configuring automatic security updates..."
+apt install -y unattended-upgrades apt-listchanges
 
-# Set permissions
-chown -R "$DEV_USERNAME":"$DEV_USERNAME" /home/"$DEV_USERNAME"/apps
-chown -R "$DEV_USERNAME":"$DEV_USERNAME" /home/"$DEV_USERNAME"/pm2
-chown -R "$DEV_USERNAME":"$DEV_USERNAME" /home/"$DEV_USERNAME"/logs
-chown -R "$DEV_USERNAME":"$DEV_USERNAME" /home/"$DEV_USERNAME"/backups
+cat > /etc/apt/apt.conf.d/50unattended-upgrades <<EOF
+Unattended-Upgrade::Allowed-Origins {
+    "\${distro_id}:\${distro_codename}-security";
+};
+EOF
 
-chmod -R 755 /home/"$DEV_USERNAME"/apps
-chmod -R 755 /home/"$DEV_USERNAME"/pm2
-chmod -R 755 /home/"$DEV_USERNAME"/logs
-chmod -R 755 /home/"$DEV_USERNAME"/backups
+systemctl enable unattended-upgrades
+systemctl restart unattended-upgrades
 
-print_success "Application directories created and configured"
+print_success "Automatic security updates enabled"
 
-# ============================================================================
-# STEP 9: VERIFICATION
-# ============================================================================
-print_header "STEP 9: Verification"
+print_header "STEP 11: Information Summary"
 
-echo ""
-print_info "System Information:"
-echo "  Hostname: $(hostname)"
-echo "  IP Address: $VPS_IP"
-echo "  OS: $(lsb_release -ds)"
-echo "  Kernel: $(uname -r)"
-echo "  Timezone: $TIMEZONE"
-echo ""
+cat <<EOF
 
-print_info "User Information:"
-id "$DEV_USERNAME"
-echo ""
+${GREEN}========================================${NC}
+${GREEN}TAHAP 1 SETUP COMPLETED SUCCESSFULLY${NC}
+${GREEN}========================================${NC}
 
-print_info "SSH Status:"
-systemctl status ssh --no-pager | head -n 5
-echo ""
+${YELLOW}Important Information:${NC}
+  VPS Public IP: $PUBLIC_IP
+  SSH Port: $SSH_PORT
+  Development User: $DEV_USER
+  Domain Template: $DOMAIN_TEMPLATE
+  Timezone: $TIMEZONE
 
-print_info "Fail2Ban Status:"
-systemctl status fail2ban --no-pager | head -n 5
-echo ""
+${YELLOW}Next Steps:${NC}
+1. Make sure you can SSH into the server with the new port:
+   ssh -p $SSH_PORT $DEV_USER@$PUBLIC_IP
 
-print_info "Firewall Status:"
-ufw status
-echo ""
+2. Run TAHAP 2: Node.js, NVM, PM2, and Nginx installation
+   sudo bash tahap2-nodejs-pm2-nginx.sh
 
-# ============================================================================
-# STEP 10: SUMMARY AND NEXT STEPS
-# ============================================================================
-print_header "TAHAP 1: SETUP COMPLETED SUCCESSFULLY"
+${YELLOW}Important Notes:${NC}
+- SSH root login is disabled
+- Password authentication is disabled (use SSH keys only)
+- Firewall is enabled
+- Fail2Ban is protecting against brute force attacks
+- Automatic security updates are enabled
 
-echo -e "${GREEN}✓ All tasks completed!${NC}\n"
-
-cat << EOF
-${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-
-IMPORTANT NOTES:
-
-1. SSH Configuration Changed:
-   ${YELLOW}Old Port: 22${NC}
-   ${YELLOW}New Port: $SSH_PORT${NC}
-   
-   Update your VSCode Remote SSH config:
-   ${YELLOW}Host your-vps${NC}
-   ${YELLOW}    HostName $VPS_IP${NC}
-   ${YELLOW}    Port $SSH_PORT${NC}
-   ${YELLOW}    User $DEV_USERNAME${NC}
-
-2. SSH Key Authentication Required:
-   You MUST add your public key to authorized_keys.
-   From your local machine:
-   ${YELLOW}ssh-copy-id -i ~/.ssh/your_key -p $SSH_PORT $DEV_USERNAME@$VPS_IP${NC}
-
-3. Firewall Rules Applied:
-   - SSH: Port $SSH_PORT
-   - HTTP: Port 80
-   - HTTPS: Port 443
-   - App Ports: 3001-3020
-   - Wireguard: Port 51820
-   - Webmin: Port 10000
-
-4. Development User Created:
-   Username: ${YELLOW}$DEV_USERNAME${NC}
-   Has sudo privileges: ${YELLOW}Yes${NC}
-
-5. Domain Configuration:
-   Replace '${YELLOW}$DOMAIN_PLACEHOLDER${NC}' with your actual domain in:
-   - Nginx configuration files (Tahap 4)
-   - DNS records
-   - SSL certificate setup (Tahap 5)
-
-6. Next Steps (Run Tahap 2):
-   - Install Node.js and NVM
-   - Install PM2
-   - Install Nginx
-   - Configure system monitoring
-
-   Execute: ${YELLOW}bash tahap2-nodejs-pm2-nginx.sh${NC}
-
-${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}
-
-Configuration files saved:
-  - SSH config: /etc/ssh/sshd_config
-  - SSH backup: /etc/ssh/sshd_config.backup.*
-  - Fail2Ban: /etc/fail2ban/jail.local
-  - Firewall: ufw status
-
-Logs and monitoring:
-  ${YELLOW}tail -f /var/log/auth.log${NC} (SSH logs)
-  ${YELLOW}fail2ban-client status${NC} (Fail2Ban status)
-  ${YELLOW}ufw status verbose${NC} (Firewall details)
+${YELLOW}Directory Structure Created:${NC}
+  /home/$DEV_USER/apps/repos/        - Git repositories
+  /home/$DEV_USER/apps/staging/      - Staging applications
+  /home/$DEV_USER/apps/production/   - Production applications
+  /home/$DEV_USER/logs/              - Application logs
+  /home/$DEV_USER/backups/           - Backup directory
+  /home/$DEV_USER/config/            - Configuration files
+  /home/$DEV_USER/scripts/           - Helper scripts
 
 EOF
 
-print_success "TAHAP 1 Setup Complete!"
-print_warning "Please test SSH connection with new port before closing this terminal"
-
-exit 0
+print_success "All configurations completed!"
