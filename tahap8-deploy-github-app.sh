@@ -71,6 +71,7 @@ DEPLOY_ENV="production"
 APP_PORT=""
 UPDATE_ONLY=false
 SKIP_INSTALL=false
+OPTIMIZE_NODE_MODULES=true
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -80,6 +81,7 @@ while [[ $# -gt 0 ]]; do
         --env) DEPLOY_ENV="$2"; shift 2 ;;
         --update) UPDATE_ONLY=true; shift ;;
         --skip-install) SKIP_INSTALL=true; shift ;;
+        --no-optimize) OPTIMIZE_NODE_MODULES=false; shift ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
@@ -272,6 +274,23 @@ else
 fi
 
 # ============================================================================
+# SECTION 6B: Optimize Node Modules (Symlink Strategy)
+# ============================================================================
+if [ "$OPTIMIZE_NODE_MODULES" = true ] && [ "$SKIP_INSTALL" = false ]; then
+    print_header "6B. Optimize Node Modules"
+    
+    if [ -f "$APPS_BASE_DIR/node_modules-optimizer.sh" ]; then
+        print_info "Running node_modules optimizer..."
+        bash "$APPS_BASE_DIR/node_modules-optimizer.sh" "$APP_NAME" init
+        print_success "Node modules optimization complete"
+    else
+        print_warning "node_modules-optimizer.sh not found, skipping optimization"
+        print_info "To setup optimization later, run:"
+        print_info "  bash $APPS_BASE_DIR/node_modules-optimizer.sh $APP_NAME init"
+    fi
+fi
+
+# ============================================================================
 # SECTION 7: Build Application
 # ============================================================================
 print_header "7. Build Aplikasi"
@@ -403,6 +422,22 @@ echo "${CYAN}Setelah itu reload nginx:${NC}"
 echo "   sudo systemctl reload nginx"
 echo ""
 
+if [ "$OPTIMIZE_NODE_MODULES" = true ]; then
+    echo "${CYAN}Node Modules Info:${NC}"
+    echo "  Strategy: Hybrid Symlinks (repos → staging → production)"
+    echo "  - repos/$APP_NAME/node_modules: Full install (dev + prod)"
+    echo "  - staging/$APP_NAME/node_modules: Symlink ke repos"
+    echo "  - production/$APP_NAME/node_modules: Prod-only install"
+    echo ""
+    echo "${CYAN}Disk Savings:${NC}"
+    echo "  Expected: ~600MB per app (vs 1.5GB without optimization)"
+    echo "  For 30 apps: ~18GB instead of 45GB (60% savings)"
+    echo ""
+    echo "${CYAN}Monitor Disk Usage:${NC}"
+    echo "  bash $APPS_BASE_DIR/disk-usage-report.sh"
+    echo ""
+fi
+
 # ============================================================================
 # SECTION 12: Summary
 # ============================================================================
@@ -458,9 +493,17 @@ print_header "✓ TAHAP 8 Selesai!"
 
 echo -e "${GREEN}Aplikasi $APP_NAME berhasil di-deploy ke $DEPLOY_ENV!${NC}"
 echo ""
-echo "Update aplikasi kedepannya:"
+echo "${CYAN}Update aplikasi kedepannya:${NC}"
 echo "  bash tahap8-deploy-github-app.sh --app $APP_NAME --env $DEPLOY_ENV --update"
 echo ""
-echo "Deploy aplikasi lainnya:"
+echo "${CYAN}Deploy aplikasi lainnya:${NC}"
 echo "  bash tahap8-deploy-github-app.sh --app aplikasi2 --repo git@github.com:user/app2.git --env production"
+echo ""
+echo "${CYAN}Deploy multiple apps dengan optimization:${NC}"
+echo "  for i in {1..5}; do"
+echo "    bash tahap8-deploy-github-app.sh --app aplikasi\$i --repo <repo-url> --env production"
+echo "  done"
+echo ""
+echo "${CYAN}Skip optimization (use full installs):${NC}"
+echo "  bash tahap8-deploy-github-app.sh --app $APP_NAME --env $DEPLOY_ENV --no-optimize"
 echo ""
