@@ -1,33 +1,29 @@
 #!/bin/bash
 
 ################################################################################
-# TAHAP 8: Deploy GitHub Application
-# Ubuntu 24.04 LTS - Multi-App Deployment
+# TAHAP 8: Deploy Aplikasi dari GitHub
+# Ubuntu 24.04 LTS
 #
-# Script ini menghandle:
-# - Clone repository dari GitHub (fresh atau update existing)
-# - Setup environment variables
-# - Install dependencies (npm)
-# - Build aplikasi (jika diperlukan)
-# - Start/restart dengan PM2
-# - Health check setelah deploy
+# Workflow: repos (source) → staging (test) → production (live)
 #
-# Usage: 
-#   Fresh deployment:
-#     bash tahap8-deploy-github-app.sh
-#   
-#   Update existing app:
-#     bash tahap8-deploy-github-app.sh --app aplikasi1 --update
-#   
-#   Deploy multiple apps:
-#     bash tahap8-deploy-github-app.sh --app aplikasi1
-#     bash tahap8-deploy-github-app.sh --app aplikasi2
+# Script ini mengkonfigurasi:
+# - Clone/pull repository dari GitHub ke repos/
+# - Copy ke staging/ atau production/
+# - Setup environment variables (.env)
+# - Install dependencies (npm install)
+# - Build aplikasi (npm run build)
+# - Configure PM2
+# - Health check
 #
-# Prerequisites:
-#   - Tahap 1-7 sudah completed
-#   - GitHub SSH key sudah configured (tahap 3)
-#   - PM2 ecosystem config sudah ada
+# Usage:
+#   # Deploy pertama kali (staging)
+#   bash tahap8-deploy-github-app.sh --app aplikasi1 --repo git@github.com:user/app.git --env staging
 #
+#   # Deploy ke production setelah staging OK
+#   bash tahap8-deploy-github-app.sh --app aplikasi1 --env production --update
+#
+#   # Update aplikasi yang sudah ada
+#   bash tahap8-deploy-github-app.sh --app aplikasi1 --env production --update
 ################################################################################
 
 set -e
@@ -38,7 +34,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
 # Functions
 print_header() {
@@ -63,344 +59,294 @@ print_info() {
     echo -e "${CYAN}ℹ $1${NC}"
 }
 
-# Check if running as development user (not root)
-if [[ $EUID -eq 0 ]]; then
-    print_error "Script ini harus dijalankan sebagai development user (bukan sudo)"
-    echo "Usage: bash tahap8-deploy-github-app.sh"
-    exit 1
-fi
-
 # Default values
+APP_NAME=""
+GITHUB_REPO=""
+DEV_USER="develme_rf"
+APPS_BASE_DIR="/home/$DEV_USER/apps"
+REPOS_DIR="$APPS_BASE_DIR/repos"
+STAGING_DIR="$APPS_BASE_DIR/staging"
+PRODUCTION_DIR="$APPS_BASE_DIR/production"
+DEPLOY_ENV="production"
+APP_PORT=""
 UPDATE_ONLY=false
-DEV_USER=$(whoami)
+SKIP_INSTALL=false
 
-# Parse command line arguments
+# Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --app)
-            APP_NAME="$2"
-            shift 2
-            ;;
-        --update)
-            UPDATE_ONLY=true
-            shift
-            ;;
-        --repo)
-            GITHUB_REPO="$2"
-            shift 2
-            ;;
-        *)
-            shift
-            ;;
+        --app) APP_NAME="$2"; shift 2 ;;
+        --repo) GITHUB_REPO="$2"; shift 2 ;;
+        --env) DEPLOY_ENV="$2"; shift 2 ;;
+        --update) UPDATE_ONLY=true; shift ;;
+        --skip-install) SKIP_INSTALL=true; shift ;;
+        *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
 
-print_header "TAHAP 8: Deploy GitHub Application"
+print_header "TAHAP 8: Deploy Aplikasi dari GitHub"
 
 # ============================================================================
-# SECTION 1: Get Configuration Information
+# SECTION 1: Collect Configuration Information
 # ============================================================================
-print_header "1. Konfigurasi Aplikasi"
+print_header "1. Informasi Aplikasi"
 
-# Get app name
 if [ -z "$APP_NAME" ]; then
-    read -p "Nama aplikasi [aplikasi1]: " APP_NAME
+    read -p "Nama aplikasi [default: aplikasi1]: " APP_NAME
     APP_NAME=${APP_NAME:-aplikasi1}
 fi
 
 print_success "Aplikasi: $APP_NAME"
 
-# Extract app number from name (aplikasi1 -> 1)
-APP_NUM=$(echo "$APP_NAME" | sed 's/[^0-9]*//g')
-if [ -z "$APP_NUM" ]; then
-    APP_NUM=1
-fi
-
+# Calculate port
+APP_NUM=$(echo $APP_NAME | sed 's/aplikasi//')
 APP_PORT=$((3000 + APP_NUM))
 
+# Validate DEPLOY_ENV
+if [[ ! "$DEPLOY_ENV" =~ ^(staging|production)$ ]]; then
+    DEPLOY_ENV="production"
+fi
+
+# If not update-only, ask for repository
+if [ "$UPDATE_ONLY" = false ] && [ -z "$GITHUB_REPO" ]; then
+    echo ""
+    read -p "GitHub repository URL (git@github.com:user/repo.git): " GITHUB_REPO
+    
+    if [ -z "$GITHUB_REPO" ]; then
+        print_error "Repository URL tidak boleh kosong"
+        exit 1
+    fi
+fi
+
+[ -n "$GITHUB_REPO" ] && print_success "Repository: $GITHUB_REPO"
+
+# Ask for environment if not specified
+if [ "$UPDATE_ONLY" = false ]; then
+    echo ""
+    echo "Pilih environment:"
+    echo "1) staging (untuk testing)"
+    echo "2) production (live)"
+    read -p "Pilihan [default: 2 (production)]: " ENV_CHOICE
+    ENV_CHOICE=${ENV_CHOICE:-2}
+    
+    case $ENV_CHOICE in
+        1) DEPLOY_ENV="staging" ;;
+        2) DEPLOY_ENV="production" ;;
+        *) DEPLOY_ENV="production" ;;
+    esac
+fi
+
+print_success "Deploy Environment: $DEPLOY_ENV"
 print_success "Port: $APP_PORT"
 
-# Get GitHub repository
-if [ -z "$GITHUB_REPO" ]; then
-    read -p "GitHub repository URL (git@github.com:username/repo.git): " GITHUB_REPO
-    if [ -z "$GITHUB_REPO" ]; then
-        print_error "GitHub repository URL diperlukan"
-        exit 1
-    fi
-fi
-
-print_success "Repository: $GITHUB_REPO"
-
 # ============================================================================
-# SECTION 2: Setup Application Directory
+# SECTION 2: Setup Directory Structure
 # ============================================================================
-print_header "2. Setup Direktori Aplikasi"
+print_header "2. Setup Directory Structure"
 
-APPS_DIR="/home/$DEV_USER/apps"
-APP_REPO_DIR="$APPS_DIR/repos/$APP_NAME"
-APP_PROD_DIR="$APPS_DIR/production/$APP_NAME"
+# Ensure main directories exist
+mkdir -p "$REPOS_DIR" "$STAGING_DIR" "$PRODUCTION_DIR"
+print_success "Main directories verified"
 
-# Create directories if not exist
-mkdir -p "$APPS_DIR/repos"
-mkdir -p "$APPS_DIR/production"
-
-print_success "Directories siap: $APPS_DIR"
-
-# ============================================================================
-# SECTION 3: Clone or Update Repository
-# ============================================================================
-print_header "3. Clone/Update Repository dari GitHub"
-
-if [ -d "$APP_REPO_DIR/.git" ]; then
-    print_info "Repository sudah ada, melakukan update..."
-    
-    cd "$APP_REPO_DIR"
-    git fetch origin
-    git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || true
-    
-    print_success "Repository diupdate"
+# Setup target directory based on environment
+if [ "$DEPLOY_ENV" = "staging" ]; then
+    TARGET_DIR="$STAGING_DIR/$APP_NAME"
 else
-    print_info "Melakukan clone repository..."
-    
-    git clone "$GITHUB_REPO" "$APP_REPO_DIR"
-    
-    if [ ! -d "$APP_REPO_DIR" ]; then
-        print_error "Clone gagal. Periksa GitHub URL dan SSH key"
-        exit 1
-    fi
-    
-    print_success "Repository di-clone: $APP_REPO_DIR"
+    TARGET_DIR="$PRODUCTION_DIR/$APP_NAME"
 fi
 
-cd "$APP_REPO_DIR"
+REPO_SOURCE="$REPOS_DIR/$APP_NAME"
 
-# Get latest commit info
-COMMIT_HASH=$(git rev-parse --short HEAD)
-COMMIT_MSG=$(git log -1 --pretty=%B)
-
-print_info "Commit: $COMMIT_HASH - $COMMIT_MSG"
+print_success "Repository source: $REPO_SOURCE"
+print_success "Deploy target: $TARGET_DIR"
 
 # ============================================================================
-# SECTION 4: Setup Environment File
+# SECTION 3: Manage Repository Source (repos/)
 # ============================================================================
-print_header "4. Setup Environment Variables"
+print_header "3. Setup Repository Source"
 
-ENV_FILE="$APP_PROD_DIR/.env"
-
-# Create production directory
-mkdir -p "$APP_PROD_DIR"
-
-# Check if template exists
-if [ -f "$APP_REPO_DIR/.env.example" ]; then
-    print_info "Menggunakan .env.example dari repository"
-    cp "$APP_REPO_DIR/.env.example" "$ENV_FILE"
-elif [ -f "/home/$DEV_USER/pm2-configs/${APP_NAME}.env" ]; then
-    print_info "Menggunakan template dari pm2-configs"
-    cp "/home/$DEV_USER/pm2-configs/${APP_NAME}.env" "$ENV_FILE"
-else
-    print_info "Membuat .env file baru"
-    cat > "$ENV_FILE" << EOF
-# Environment untuk $APP_NAME
-NODE_ENV=production
-PORT=$APP_PORT
-APP_NAME=$APP_NAME
-APP_URL=https://$APP_NAME.sv1.thinking.my.id
-
-# Database (optional, adjust sesuai kebutuhan)
-# DB_HOST=localhost
-# DB_PORT=5432
-# DB_NAME=$APP_NAME
-# DB_USER=$DEV_USER
-# DB_PASSWORD=your_password
-
-# API Keys (optional)
-# API_KEY=your_api_key
-# SECRET_KEY=your_secret_key
-
-# Logging
-LOG_LEVEL=info
-LOG_DIR=/home/$DEV_USER/apps/logs/$APP_NAME
-EOF
-fi
-
-# Prompt to customize .env
-echo -e "\n${YELLOW}Environment file dibuat: $ENV_FILE${NC}"
-read -p "Edit .env file sekarang? (y/n) [default: n]: " EDIT_ENV
-EDIT_ENV=${EDIT_ENV:-n}
-
-if [ "$EDIT_ENV" = "y" ] || [ "$EDIT_ENV" = "Y" ]; then
-    nano "$ENV_FILE"
-fi
-
-print_success "Environment file siap"
-
-# ============================================================================
-# SECTION 5: Install Dependencies
-# ============================================================================
-print_header "5. Install Dependencies"
-
-cd "$APP_REPO_DIR"
-
-# Check Node.js version
-NODE_VERSION=$(node -v)
-NPM_VERSION=$(npm -v)
-
-print_info "Node.js: $NODE_VERSION"
-print_info "NPM: $NPM_VERSION"
-
-# Check if package.json exists
-if [ ! -f "package.json" ]; then
-    print_error "package.json tidak ditemukan di repository"
-    exit 1
-fi
-
-# Install dependencies
-print_info "Menginstall dependencies (ini mungkin butuh beberapa menit)..."
-
-npm install --production 2>&1 | tail -5
-
-if [ -d "node_modules" ]; then
-    DEPS_COUNT=$(ls node_modules | wc -l)
-    print_success "Dependencies terinstall: $DEPS_COUNT packages"
-else
-    print_error "Instalasi dependencies gagal"
-    exit 1
-fi
-
-# ============================================================================
-# SECTION 6: Build Application (if needed)
-# ============================================================================
-print_header "6. Build Aplikasi"
-
-if grep -q '"build"' package.json; then
-    print_info "Build script ditemukan di package.json"
-    
-    read -p "Jalankan build script? (y/n) [default: y]: " RUN_BUILD
-    RUN_BUILD=${RUN_BUILD:-y}
-    
-    if [ "$RUN_BUILD" = "y" ] || [ "$RUN_BUILD" = "Y" ]; then
-        print_info "Menjalankan npm run build..."
-        npm run build 2>&1 | tail -10
-        
-        if [ $? -eq 0 ]; then
-            print_success "Build completed"
-        else
-            print_warning "Build completed dengan warning/error"
+if [ "$UPDATE_ONLY" = false ] && [ -n "$GITHUB_REPO" ]; then
+    if [ ! -d "$REPO_SOURCE/.git" ]; then
+        print_info "Cloning repository..."
+        git clone "$GITHUB_REPO" "$REPO_SOURCE"
+        print_success "Repository di-clone: $REPO_SOURCE"
+    else
+        print_warning "Repository sudah ada di: $REPO_SOURCE"
+        read -p "Update ke latest version? (y/n): " UPDATE_REPO
+        if [ "$UPDATE_REPO" = "y" ]; then
+            cd "$REPO_SOURCE"
+            git pull origin main 2>/dev/null || git pull origin master
+            print_success "Repository di-update"
         fi
     fi
 else
-    print_info "Tidak ada build script di package.json"
+    if [ ! -d "$REPO_SOURCE/.git" ]; then
+        print_error "Repository tidak ditemukan di: $REPO_SOURCE"
+        print_error "Gunakan --repo untuk clone pertama kali"
+        exit 1
+    fi
+    print_success "Repository source ada: $REPO_SOURCE"
 fi
 
 # ============================================================================
-# SECTION 7: Copy to Production Directory
+# SECTION 4: Copy dari Repository ke Target Environment
 # ============================================================================
-print_header "7. Persiapan Production Directory"
+print_header "4. Copy Aplikasi ke $DEPLOY_ENV"
 
-print_info "Copying files to production directory..."
+print_info "Copying dari $REPO_SOURCE ke $TARGET_DIR"
 
-# Copy source code
-rsync -av --exclude='node_modules' --exclude='.git' \
-    "$APP_REPO_DIR/" "$APP_PROD_DIR/" > /dev/null 2>&1
-
-# Create node_modules symlink to save disk space (optional)
-if [ -d "$APP_REPO_DIR/node_modules" ]; then
-    rm -rf "$APP_PROD_DIR/node_modules" 2>/dev/null || true
-    ln -sf "$APP_REPO_DIR/node_modules" "$APP_PROD_DIR/node_modules"
-    print_info "node_modules symlinked (hemat disk space)"
+if [ -d "$TARGET_DIR" ]; then
+    print_warning "Target directory sudah ada: $TARGET_DIR"
+    read -p "Overwrite? (y/n): " OVERWRITE
+    if [ "$OVERWRITE" != "y" ]; then
+        print_info "Deploy dibatalkan"
+        exit 0
+    fi
+    rm -rf "$TARGET_DIR"
 fi
 
-# Create logs directory
-mkdir -p "/home/$DEV_USER/apps/logs/$APP_NAME"
-chmod 755 "/home/$DEV_USER/apps/logs/$APP_NAME"
+cp -r "$REPO_SOURCE" "$TARGET_DIR"
+print_success "Aplikasi di-copy ke: $TARGET_DIR"
 
-print_success "Production directory siap: $APP_PROD_DIR"
+# Change to target directory for rest of script
+cd "$TARGET_DIR"
 
 # ============================================================================
-# SECTION 8: PM2 Configuration
+# SECTION 5: Setup Environment Variables
 # ============================================================================
-print_header "8. Setup PM2 Configuration"
+print_header "5. Setup Environment Variables"
 
-PM2_CONFIG="/home/$DEV_USER/pm2-configs/${APP_NAME}.config.js"
+ENV_FILE="$TARGET_DIR/.env"
+ENV_EXAMPLE="$TARGET_DIR/.env.example"
 
-if [ ! -f "$PM2_CONFIG" ]; then
-    print_info "Membuat PM2 config untuk $APP_NAME..."
+if [ ! -f "$ENV_FILE" ]; then
+    if [ -f "$ENV_EXAMPLE" ]; then
+        cp "$ENV_EXAMPLE" "$ENV_FILE"
+        print_success ".env created from .env.example"
+    else
+        # Create basic .env
+        cat > "$ENV_FILE" << EOF
+NODE_ENV=$DEPLOY_ENV
+PORT=$APP_PORT
+APP_NAME=$APP_NAME
+EOF
+        print_success ".env created with basic settings"
+    fi
     
-    cat > "$PM2_CONFIG" << 'PM2_EOF'
+    # Ask to edit
+    read -p "Edit .env file sekarang? (y/n): " EDIT_ENV
+    if [ "$EDIT_ENV" = "y" ]; then
+        nano "$ENV_FILE"
+    fi
+else
+    print_success ".env sudah ada"
+    read -p "Edit .env file? (y/n): " EDIT_ENV
+    if [ "$EDIT_ENV" = "y" ]; then
+        nano "$ENV_FILE"
+    fi
+fi
+
+print_success "Environment setup complete"
+
+# ============================================================================
+# SECTION 6: Install Dependencies
+# ============================================================================
+print_header "6. Install Dependencies"
+
+if [ "$SKIP_INSTALL" = true ]; then
+    print_warning "Skipping npm install (--skip-install flag)"
+else
+    if [ -f "package.json" ]; then
+        if [ -d "node_modules" ]; then
+            print_info "node_modules sudah ada, updating..."
+            npm update
+        else
+            print_info "Installing npm dependencies..."
+            npm install
+        fi
+        print_success "Dependencies terinstall"
+    else
+        print_error "package.json tidak ditemukan"
+        exit 1
+    fi
+fi
+
+# ============================================================================
+# SECTION 7: Build Application
+# ============================================================================
+print_header "7. Build Aplikasi"
+
+if [ -f "package.json" ]; then
+    # Check for build script
+    if grep -q '"build"' package.json; then
+        print_info "Running npm run build..."
+        npm run build
+        print_success "Aplikasi berhasil di-build"
+    else
+        print_warning "Build script tidak ditemukan di package.json"
+        print_info "Skipping build step"
+    fi
+fi
+
+# ============================================================================
+# SECTION 8: Configure PM2
+# ============================================================================
+print_header "8. Configure PM2"
+
+PM2_NAME="$APP_NAME"
+if [ "$DEPLOY_ENV" = "staging" ]; then
+    PM2_NAME="staging-${APP_NAME}"
+fi
+
+PM2_CONFIG_DIR="/home/$DEV_USER/pm2-configs"
+PM2_APP_CONFIG="$PM2_CONFIG_DIR/${APP_NAME}.js"
+
+if [ -f "$PM2_APP_CONFIG" ]; then
+    print_success "PM2 config sudah ada: $PM2_APP_CONFIG"
+else
+    print_info "Creating PM2 configuration..."
+    
+    cat > "$PM2_APP_CONFIG" << EOF
 module.exports = {
   apps: [{
-    name: 'APP_NAME_PLACEHOLDER',
-    script: 'npm',
-    args: 'start',
-    cwd: 'APP_DIR_PLACEHOLDER',
-    instances: 'max',
-    exec_mode: 'cluster',
+    name: '$APP_NAME',
+    script: './dist/index.js',
+    instances: 1,
     env: {
-      NODE_ENV: 'production',
-      PORT: APP_PORT_PLACEHOLDER
+      NODE_ENV: '$DEPLOY_ENV',
+      PORT: $APP_PORT
     },
-    error_file: '/home/DEV_USER_PLACEHOLDER/apps/logs/APP_NAME_PLACEHOLDER/error.log',
-    out_file: '/home/DEV_USER_PLACEHOLDER/apps/logs/APP_NAME_PLACEHOLDER/out.log',
-    log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-    max_memory_restart: '500M',
-    min_uptime: '10s',
-    max_restarts: 10,
-    autorestart: true,
-    watch: false,
-    merge_logs: true,
-    ignore_watch: ['node_modules', 'logs', '.git']
+    error_file: '/var/log/pm2/${APP_NAME}.error.log',
+    out_file: '/var/log/pm2/${APP_NAME}.out.log',
+    log_date_format: 'YYYY-MM-DD HH:mm:ss Z'
   }]
 };
-PM2_EOF
+EOF
     
-    # Replace placeholders
-    sed -i "s/APP_NAME_PLACEHOLDER/$APP_NAME/g" "$PM2_CONFIG"
-    sed -i "s|APP_DIR_PLACEHOLDER|$APP_PROD_DIR|g" "$PM2_CONFIG"
-    sed -i "s/APP_PORT_PLACEHOLDER/$APP_PORT/g" "$PM2_CONFIG"
-    sed -i "s/DEV_USER_PLACEHOLDER/$DEV_USER/g" "$PM2_CONFIG"
-    
-    print_success "PM2 config dibuat: $PM2_CONFIG"
-else
-    print_success "PM2 config sudah ada: $PM2_CONFIG"
+    print_success "PM2 config created"
 fi
 
 # ============================================================================
-# SECTION 9: Start/Restart Application with PM2
+# SECTION 9: Start Application with PM2
 # ============================================================================
 print_header "9. Start/Restart Aplikasi dengan PM2"
 
-print_info "Checking PM2 status..."
-
-# Check if app already running
-if pm2 list | grep -q "$APP_NAME"; then
-    print_info "Aplikasi $APP_NAME sudah running, melakukan restart..."
-    pm2 restart "$APP_NAME"
-    
-    sleep 2
-    PM2_STATUS=$(pm2 list | grep "$APP_NAME" | awk '{print $12}')
-    
-    if [ "$PM2_STATUS" = "online" ]; then
-        print_success "Aplikasi di-restart: $APP_NAME (status: online)"
-    else
-        print_warning "Aplikasi di-restart, tapi status: $PM2_STATUS"
+# Check if already running
+if pm2 list | grep -q "$PM2_NAME"; then
+    print_warning "Aplikasi sudah running: $PM2_NAME"
+    read -p "Restart? (y/n): " RESTART
+    if [ "$RESTART" = "y" ]; then
+        pm2 restart "$PM2_NAME"
+        print_success "Aplikasi di-restart: $PM2_NAME"
     fi
 else
-    print_info "Starting aplikasi $APP_NAME untuk pertama kali..."
-    pm2 start "$PM2_CONFIG"
-    
-    sleep 2
-    PM2_STATUS=$(pm2 list | grep "$APP_NAME" | awk '{print $12}')
-    
-    if [ "$PM2_STATUS" = "online" ]; then
-        print_success "Aplikasi started: $APP_NAME (status: online)"
-    else
-        print_warning "Aplikasi started, tapi status: $PM2_STATUS"
-    fi
+    print_info "Starting aplikasi: $PM2_NAME"
+    pm2 start "$PM2_APP_CONFIG" --name "$PM2_NAME"
+    print_success "Aplikasi started dengan PM2: $PM2_NAME"
 fi
 
 # Save PM2 config
 pm2 save
-
 print_success "PM2 config disimpan"
 
 # ============================================================================
@@ -408,48 +354,53 @@ print_success "PM2 config disimpan"
 # ============================================================================
 print_header "10. Health Check"
 
-print_info "Waiting for application to be ready..."
+print_info "Checking if application is responding..."
+
+# Wait for application to start
 sleep 3
 
 # Check if port is listening
 if netstat -tuln | grep -q ":$APP_PORT "; then
-    print_success "Aplikasi listening di port $APP_PORT"
+    print_success "Port $APP_PORT is listening ✓"
 else
-    print_warning "Port $APP_PORT tidak listening. Check logs: pm2 logs $APP_NAME"
+    print_error "Port $APP_PORT is not listening ✗"
+    print_info "PM2 logs:"
+    pm2 logs "$PM2_NAME" --lines 20
+    exit 1
 fi
 
-# Test HTTP endpoint
-print_info "Testing HTTP endpoint..."
-
-HEALTH_TEST=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$APP_PORT/ 2>/dev/null || echo "000")
-
-if [ "$HEALTH_TEST" = "200" ] || [ "$HEALTH_TEST" = "301" ] || [ "$HEALTH_TEST" = "302" ]; then
-    print_success "HTTP endpoint responding: $HEALTH_TEST"
+# Try HTTP request
+if curl -s http://localhost:$APP_PORT > /dev/null 2>&1; then
+    print_success "HTTP health check passed ✓"
 else
-    print_warning "HTTP endpoint returned: $HEALTH_TEST"
+    print_warning "HTTP health check failed (aplikasi mungkin belum siap)"
 fi
 
 # ============================================================================
-# SECTION 11: Enable Nginx for Application
+# SECTION 11: Setup Nginx Integration
 # ============================================================================
-print_header "11. Enable Nginx Configuration"
+print_header "11. Setup Nginx Integration"
 
-echo -e "\n${YELLOW}Aplikasi sudah ready. Untuk enable di Nginx, pilih salah satu:${NC}\n"
-
-echo "Path-based routing (https://sv1.thinking.my.id/$APP_NAME):"
-echo "  sudo ln -s /etc/nginx/sites-available/app-${APP_NAME}-path /etc/nginx/sites-enabled/"
 echo ""
-
-echo "Subdomain-based routing (https://${APP_NAME}.sv1.thinking.my.id):"
-echo "  sudo ln -s /etc/nginx/sites-available/app-${APP_NAME}-subdomain /etc/nginx/sites-enabled/"
+echo "${CYAN}Aplikasi Status:${NC}"
+echo "  Nama: $APP_NAME"
+echo "  Environment: $DEPLOY_ENV"
+echo "  Port: $APP_PORT"
+echo "  PM2 Process: $PM2_NAME"
 echo ""
-
-echo "Hybrid (both):"
-echo "  sudo ln -s /etc/nginx/sites-available/app-${APP_NAME}-hybrid /etc/nginx/sites-enabled/"
+echo "${CYAN}Untuk mengaktifkan di Nginx:${NC}"
 echo ""
-
-echo "Kemudian reload Nginx:"
-echo "  sudo systemctl reload nginx"
+echo "1. PATH-BASED routing (https://sv1.thinking.my.id/$APP_NAME):"
+echo "   sudo ln -s /etc/nginx/sites-available/app-${APP_NAME}-path /etc/nginx/sites-enabled/"
+echo ""
+echo "2. SUBDOMAIN-BASED routing (https://${APP_NAME}.sv1.thinking.my.id):"
+echo "   sudo ln -s /etc/nginx/sites-available/app-${APP_NAME}-subdomain /etc/nginx/sites-enabled/"
+echo ""
+echo "3. HYBRID (keduanya):"
+echo "   sudo ln -s /etc/nginx/sites-available/app-${APP_NAME}-hybrid /etc/nginx/sites-enabled/"
+echo ""
+echo "${CYAN}Setelah itu reload nginx:${NC}"
+echo "   sudo systemctl reload nginx"
 echo ""
 
 # ============================================================================
@@ -457,50 +408,59 @@ echo ""
 # ============================================================================
 print_header "12. Deployment Summary"
 
-echo -e "${BLUE}Aplikasi Information:${NC}\n"
-echo "    Nama:               $APP_NAME"
-echo "    Port:               $APP_PORT"
-echo "    Repository:         $GITHUB_REPO"
-echo "    Commit:             $COMMIT_HASH"
+echo ""
+echo "${CYAN}Deployment Information:${NC}"
+echo "  Application: $APP_NAME"
+echo "  Environment: $DEPLOY_ENV"
+echo "  Port: $APP_PORT"
+echo "  Source: $REPO_SOURCE"
+echo "  Deploy: $TARGET_DIR"
+echo "  PM2 Process: $PM2_NAME"
+echo ""
+echo "${CYAN}Directory Structure:${NC}"
+echo "  repos/$APP_NAME ← Source (from GitHub)"
+echo "  $DEPLOY_ENV/$APP_NAME ← Working copy"
+echo ""
+echo "${CYAN}Useful Commands:${NC}"
+echo ""
+echo "View logs:"
+echo "  pm2 logs $PM2_NAME"
+echo ""
+echo "Restart:"
+echo "  pm2 restart $PM2_NAME"
+echo ""
+echo "Monitor:"
+echo "  pm2 monit"
+echo ""
+echo "Stop:"
+echo "  pm2 stop $PM2_NAME"
+echo ""
+echo "View directory:"
+echo "  ls -la $TARGET_DIR"
+echo ""
+echo "${CYAN}Next Steps:${NC}"
+echo ""
+if [ "$DEPLOY_ENV" = "staging" ]; then
+    echo "1. Test aplikasi di staging"
+    echo "2. Verify logs: pm2 logs $PM2_NAME"
+    echo "3. Approve deployment"
+    echo "4. Deploy to production:"
+    echo "   bash tahap8-deploy-github-app.sh --app $APP_NAME --env production --update"
+else
+    echo "1. Link Nginx configuration (pilih path, subdomain, atau hybrid)"
+    echo "2. Reload Nginx: sudo systemctl reload nginx"
+    echo "3. Test akses aplikasi"
+    echo "4. Monitor: pm2 monit"
+fi
 echo ""
 
-echo -e "${BLUE}Direktori:${NC}\n"
-echo "    Repository:         $APP_REPO_DIR"
-echo "    Production:         $APP_PROD_DIR"
-echo "    Environment:        $ENV_FILE"
-echo "    Logs:               /home/$DEV_USER/apps/logs/$APP_NAME"
+print_header "✓ TAHAP 8 Selesai!"
+
+echo -e "${GREEN}Aplikasi $APP_NAME berhasil di-deploy ke $DEPLOY_ENV!${NC}"
 echo ""
-
-echo -e "${BLUE}PM2 Configuration:${NC}\n"
-echo "    Config file:        $PM2_CONFIG"
+echo "Update aplikasi kedepannya:"
+echo "  bash tahap8-deploy-github-app.sh --app $APP_NAME --env $DEPLOY_ENV --update"
 echo ""
-
-echo -e "${BLUE}Useful Commands:${NC}\n"
-echo "    View logs:          pm2 logs $APP_NAME"
-echo "    Restart:            pm2 restart $APP_NAME"
-echo "    Stop:               pm2 stop $APP_NAME"
-echo "    Delete:             pm2 delete $APP_NAME"
-echo "    Monitor:            pm2 monit"
+echo "Deploy aplikasi lainnya:"
+echo "  bash tahap8-deploy-github-app.sh --app aplikasi2 --repo git@github.com:user/app2.git --env production"
 echo ""
-
-# ============================================================================
-# SECTION 13: Deploy Another App (Optional)
-# ============================================================================
-print_header "13. Langkah Selanjutnya"
-
-echo -e "${GREEN}✓ Deployment $APP_NAME completed!${NC}\n"
-
-echo -e "${YELLOW}Next steps:${NC}\n"
-echo "1. Enable Nginx (pilih path/subdomain/hybrid)"
-echo "2. Reload Nginx: sudo systemctl reload nginx"
-echo "3. Test aplikasi:"
-echo "   - Path: https://sv1.thinking.my.id/$APP_NAME"
-echo "   - Subdomain: https://$APP_NAME.sv1.thinking.my.id"
-echo ""
-echo "Deploy aplikasi lain:"
-echo "   bash tahap8-deploy-github-app.sh --app aplikasi2"
-echo ""
-
-print_header "✓ TAHAP 8 - $APP_NAME Completed"
-
-exit 0
