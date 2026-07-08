@@ -167,7 +167,7 @@ sudo apt install -y git
 
 # Configure Git global (sebagai devel_me)
 sudo -u devel_me git config --global user.name "Development Team"
-sudo -u devel_me git config --global user.email "dev@aplikasikeren.id"
+sudo -u devel_me git config --global user.email "dev@aplikasiabiyorf"
 
 # Setup Git credential helper
 sudo -u devel_me git config --global credential.helper store
@@ -183,7 +183,7 @@ sudo -u devel_me git config --list
 sudo su - devel_me
 
 # Generate SSH key (tekan Enter saat diminta passphrase, atau beri passphrase)
-ssh-keygen -t ed25519 -C "dev@aplikasikeren.id"
+ssh-keygen -t ed25519 -C "dev@aplikasiabiyorf"
 
 # Default location: ~/.ssh/id_ed25519
 # Pilih: ~/.ssh/github_vps untuk spesifik
@@ -292,17 +292,17 @@ mkdir -p ~/backups
    - Port 4001-4020: Backend APIs (jika ada)
 
 2. **Staging** (Path-based):
-   - `https://staging.aplikasikeren.id/app-dashboard`
-   - `https://staging.aplikasikeren.id/app-analytics`
+   - `https://staging.aplikasiabiyorf/app-dashboard`
+   - `https://staging.aplikasiabiyorf/app-analytics`
    - Backend: `:4001-4020` (internal)
 
 3. **Production** (Hybrid):
    - Primary: Subdomains
-     - `https://dashboard.aplikasikeren.id`
-     - `https://analytics.aplikasikeren.id`
+     - `https://dashboard.aplikasiabiyorf`
+     - `https://analytics.aplikasiabiyorf`
    - Secondary: Path-based
-     - `https://aplikasikeren.id/app/dashboard`
-     - `https://aplikasikeren.id/app/analytics`
+     - `https://aplikasiabiyorf/app/dashboard`
+     - `https://aplikasiabiyorf/app/analytics`
    - Backend: `:4001-4020` (internal, no expose)
 
 ### 3.3 Port Mapping Reference
@@ -378,18 +378,18 @@ limit_req_zone $binary_remote_addr zone=api_limit:10m rate=100r/s;
 # HTTP to HTTPS redirect
 server {
     listen 80;
-    server_name aplikasikeren.id *.aplikasikeren.id;
+    server_name aplikasiabiyorf *.aplikasiabiyorf;
     return 301 https://$server_name$request_uri;
 }
 
 # Main HTTPS server - path-based routing
 server {
     listen 443 ssl http2;
-    server_name aplikasikeren.id;
+    server_name aplikasiabiyorf;
 
     # SSL certificates (Let's Encrypt)
-    ssl_certificate /etc/letsencrypt/live/aplikasikeren.id/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/aplikasikeren.id/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/aplikasiabiyorf/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/aplikasiabiyorf/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
@@ -449,10 +449,10 @@ server {
 # Subdomain routing untuk production (optional, untuk future use)
 server {
     listen 443 ssl http2;
-    server_name *.aplikasikeren.id;
+    server_name *.aplikasiabiyorf;
 
-    ssl_certificate /etc/letsencrypt/live/aplikasikeren.id/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/aplikasikeren.id/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/aplikasiabiyorf/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/aplikasiabiyorf/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
@@ -506,17 +506,17 @@ upstream staging_app_reports { server localhost:3103; }
 # HTTP to HTTPS redirect
 server {
     listen 80;
-    server_name staging.aplikasikeren.id;
-    return 301 https://staging.aplikasikeren.id$request_uri;
+    server_name staging.aplikasiabiyorf;
+    return 301 https://staging.aplikasiabiyorf$request_uri;
 }
 
 # HTTPS Staging server
 server {
     listen 443 ssl http2;
-    server_name staging.aplikasikeren.id;
+    server_name staging.aplikasiabiyorf;
 
-    ssl_certificate /etc/letsencrypt/live/staging.aplikasikeren.id/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/staging.aplikasikeren.id/privkey.pem;
+    ssl_certificate /etc/letsencrypt/live/staging.aplikasiabiyorf/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/staging.aplikasiabiyorf/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     ssl_prefer_server_ciphers on;
@@ -595,7 +595,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3001,
-        REACT_APP_API_URL: 'https://api-dashboard.aplikasikeren.id'
+        REACT_APP_API_URL: 'https://api-dashboard.aplikasiabiyorf'
       },
       error_file: '/home/devel_me/logs/pm2/app-dashboard-error.log',
       out_file: '/home/devel_me/logs/pm2/app-dashboard-out.log',
@@ -619,7 +619,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3002,
-        REACT_APP_API_URL: 'https://api-analytics.aplikasikeren.id'
+        REACT_APP_API_URL: 'https://api-analytics.aplikasiabiyorf'
       },
       error_file: '/home/devel_me/logs/pm2/app-analytics-error.log',
       out_file: '/home/devel_me/logs/pm2/app-analytics-out.log',
@@ -643,7 +643,7 @@ module.exports = {
       env: {
         NODE_ENV: 'production',
         PORT: 3003,
-        REACT_APP_API_URL: 'https://api-reports.aplikasikeren.id'
+        REACT_APP_API_URL: 'https://api-reports.aplikasiabiyorf'
       },
       error_file: '/home/devel_me/logs/pm2/app-reports-error.log',
       out_file: '/home/devel_me/logs/pm2/app-reports-out.log',
@@ -681,7 +681,7 @@ module.exports = {
       env: {
         NODE_ENV: 'staging',
         PORT: 3101,
-        REACT_APP_API_URL: 'https://staging-api-dashboard.aplikasikeren.id'
+        REACT_APP_API_URL: 'https://staging-api-dashboard.aplikasiabiyorf'
       },
       error_file: '/home/devel_me/logs/pm2/staging-app-dashboard-error.log',
       out_file: '/home/devel_me/logs/pm2/staging-app-dashboard-out.log',
@@ -700,7 +700,7 @@ module.exports = {
       env: {
         NODE_ENV: 'staging',
         PORT: 3102,
-        REACT_APP_API_URL: 'https://staging-api-analytics.aplikasikeren.id'
+        REACT_APP_API_URL: 'https://staging-api-analytics.aplikasiabiyorf'
       },
       error_file: '/home/devel_me/logs/pm2/staging-app-analytics-error.log',
       out_file: '/home/devel_me/logs/pm2/staging-app-analytics-out.log',
@@ -778,13 +778,13 @@ pm2 save
 
 ```bash
 # Primary domain
-sudo certbot certonly --nginx -d aplikasikeren.id -d www.aplikasikeren.id
+sudo certbot certonly --nginx -d aplikasiabiyorf -d www.aplikasiabiyorf
 
 # Staging subdomain
-sudo certbot certonly --nginx -d staging.aplikasikeren.id
+sudo certbot certonly --nginx -d staging.aplikasiabiyorf
 
 # Individual subdomains (jika menggunakan path di production, tidak perlu, tapi jika pakai subdomain)
-sudo certbot certonly --nginx -d dashboard.aplikasikeren.id -d analytics.aplikasikeren.id -d reports.aplikasikeren.id
+sudo certbot certonly --nginx -d dashboard.aplikasiabiyorf -d analytics.aplikasiabiyorf -d reports.aplikasiabiyorf
 
 # Verify certificates
 sudo certbot certificates
@@ -817,7 +817,7 @@ sudo mkdir -p /etc/nginx/ssl
 sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
   -keyout /etc/nginx/ssl/self-signed.key \
   -out /etc/nginx/ssl/self-signed.crt \
-  -subj "/C=ID/ST=Jakarta/L=Jakarta/O=Dev/CN=dev.aplikasikeren.id"
+  -subj "/C=ID/ST=Jakarta/L=Jakarta/O=Dev/CN=dev.aplikasiabiyorf"
 
 # Update Nginx config dengan self-signed certs
 # ssl_certificate /etc/nginx/ssl/self-signed.crt;
@@ -838,7 +838,7 @@ sudo -u devel_me nano /home/devel_me/applications/production/app-dashboard/.env.
 ```env
 NODE_ENV=production
 PORT=3001
-REACT_APP_API_URL=https://api-dashboard.aplikasikeren.id
+REACT_APP_API_URL=https://api-dashboard.aplikasiabiyorf
 REACT_APP_ENV=production
 LOG_LEVEL=error
 DATABASE_POOL_SIZE=10
@@ -853,7 +853,7 @@ sudo -u devel_me nano /home/devel_me/applications/staging/app-dashboard/.env.sta
 ```env
 NODE_ENV=staging
 PORT=3101
-REACT_APP_API_URL=https://staging-api-dashboard.aplikasikeren.id
+REACT_APP_API_URL=https://staging-api-dashboard.aplikasiabiyorf
 REACT_APP_ENV=staging
 LOG_LEVEL=warn
 DATABASE_POOL_SIZE=5
@@ -1338,7 +1338,7 @@ top                        # Real-time monitor
 netstat -tuln              # Open ports
 curl http://localhost:3001 # Test endpoint
 nc -z localhost 3001       # Port check
-dig aplikasikeren.id       # DNS lookup
+dig aplikasiabiyorf       # DNS lookup
 
 # Git
 git status                 # Check status
