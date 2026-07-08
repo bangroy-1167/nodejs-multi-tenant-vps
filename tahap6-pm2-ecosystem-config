@@ -142,13 +142,19 @@ APPS_PLACEHOLDER
 };
 EOF
 
-# Generate apps array for ecosystem config
-APPS_JSON=""
+# Generate apps array for ecosystem config using heredoc
+{
+cat > "$PM2_CONFIG_DIR/ecosystem.config.js.tmp" << 'EOFTEMPLATE'
+module.exports = {
+  apps: [
+EOFTEMPLATE
+
 for ((i=1; i<=NUM_APPS; i++)); do
     APP_NAME="aplikasi$i"
     APP_PORT=$((3000 + i))
     
-    APPS_JSON="${APPS_JSON}    {
+    cat >> "$PM2_CONFIG_DIR/ecosystem.config.js.tmp" << EOFAPP
+    {
       name: '${APP_NAME}',
       script: '${APPS_DIR}/${APP_NAME}/dist/index.js',
       instances: 2,
@@ -171,14 +177,36 @@ for ((i=1; i<=NUM_APPS; i++)); do
       wait_ready: true,
       
       env_file: '${APPS_DIR}/${APP_NAME}/.env.production'
-    },"
+    }$([ $i -lt $NUM_APPS ] && echo ",")
+EOFAPP
 done
 
-# Remove trailing comma from last app
-APPS_JSON=${APPS_JSON%,}
+cat >> "$PM2_CONFIG_DIR/ecosystem.config.js.tmp" << 'EOFTEMPLATE'
+  ],
 
-# Replace placeholder
-sed -i "s|APPS_PLACEHOLDER|${APPS_JSON}|g" "$PM2_CONFIG_DIR/ecosystem.config.js"
+  deploy: {
+    production: {
+      user: 'devel_me',
+      host: '0.0.0.0',
+      ref: 'origin/main',
+      repo: 'git@github.com:youruser/repo.git',
+      path: '/home/devel_me/apps',
+      'post-deploy': 'npm install && npm run build && pm2 reload ecosystem.config.js --env production'
+    },
+    staging: {
+      user: 'devel_me',
+      host: '0.0.0.0',
+      ref: 'origin/develop',
+      repo: 'git@github.com:youruser/repo.git',
+      path: '/home/devel_me/apps',
+      'post-deploy': 'npm install && npm run build && pm2 reload ecosystem.config.js --env staging'
+    }
+  }
+};
+EOFTEMPLATE
+
+mv "$PM2_CONFIG_DIR/ecosystem.config.js.tmp" "$PM2_CONFIG_DIR/ecosystem.config.js"
+}
 
 print_success "Master ecosystem.config.js created"
 
