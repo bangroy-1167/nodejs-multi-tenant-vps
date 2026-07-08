@@ -1,0 +1,625 @@
+#!/bin/bash
+
+################################################################################
+# TAHAP 5: SSL/HTTPS Setup dengan Let's Encrypt
+# Ubuntu 24.04 LTS
+#
+# Script ini mengkonfigurasi:
+# - Install Certbot untuk Let's Encrypt
+# - Generate SSL certificates untuk main domain
+# - Auto-renewal configuration
+# - Enable HTTPS dalam Nginx
+# - Security headers dan redirects
+#
+# Usage: bash tahap5-ssl-https-setup.sh
+################################################################################
+
+set -e
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Functions
+print_header() {
+    echo -e "\n${BLUE}===============================================${NC}"
+    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}===============================================${NC}\n"
+}
+
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}ℹ $1${NC}"
+}
+
+# Check if running with appropriate privileges
+if [[ $EUID -ne 0 ]]; then
+    print_error "Script ini harus dijalankan dengan sudo"
+    exit 1
+fi
+
+print_header "TAHAP 5: SSL/HTTPS Setup dengan Let's Encrypt"
+
+# ============================================================================
+# SECTION 1: Collect Configuration Information
+# ============================================================================
+print_header "1. Informasi Domain dan Email"
+
+# Get main domain
+read -p "Domain utama [default: domainaplikasimu.id]: " DOMAIN
+DOMAIN=${DOMAIN:-domainaplikasimu.id}
+
+print_success "Domain: $DOMAIN"
+
+# Get email for Let's Encrypt
+read -p "Email untuk Let's Encrypt notifications [default: admin@$DOMAIN]: " CERT_EMAIL
+CERT_EMAIL=${CERT_EMAIL:-admin@$DOMAIN}
+
+print_success "Email: $CERT_EMAIL"
+
+# Ask about additional subdomains
+echo -e "\n${YELLOW}Setup tambahan untuk subdomains:${NC}"
+read -p "Berapa jumlah aplikasi dengan subdomain? [default: 5]: " NUM_SUBDOMAINS
+NUM_SUBDOMAINS=${NUM_SUBDOMAINS:-5}
+
+# Determine certificate strategy
+echo -e "\n${YELLOW}Pilih strategi sertifikat:${NC}"
+echo "1) Single wildcard certificate (*.domain.com) - Recommended"
+echo "2) Multiple certificates (per subdomain)"
+echo "3) Single certificate (main domain saja)"
+read -p "Pilihan [default: 1]: " CERT_STRATEGY
+CERT_STRATEGY=${CERT_STRATEGY:-1}
+
+case $CERT_STRATEGY in
+    1) STRATEGY_TYPE="wildcard" ;;
+    2) STRATEGY_TYPE="multiple" ;;
+    3) STRATEGY_TYPE="single" ;;
+    *) STRATEGY_TYPE="wildcard" ;;
+esac
+
+print_success "Strategi sertifikat: $STRATEGY_TYPE"
+
+# ============================================================================
+# SECTION 2: Install Certbot
+# ============================================================================
+print_header "2. Install Certbot dan Dependencies"
+
+apt-get update > /dev/null 2>&1
+apt-get install -y certbot python3-certbot-nginx > /dev/null 2>&1
+
+CERTBOT_VERSION=$(certbot --version | cut -d' ' -f2)
+
+print_success "Certbot terinstal: v$CERTBOT_VERSION"
+
+# Create certbot directories
+mkdir -p /var/www/certbot
+mkdir -p /etc/letsencrypt/live/$DOMAIN
+
+print_success "Certbot directories dibuat"
+
+# ============================================================================
+# SECTION 3: Install and Configure Certbot Renewal Service
+# ============================================================================
+print_header "3. Configure Auto-Renewal Service"
+
+# Check if timer already exists
+if systemctl is-active --quiet certbot.timer; then
+    print_success "Certbot renewal timer sudah aktif"
+else
+    systemctl enable certbot.timer
+    systemctl start certbot.timer
+    print_success "Certbot renewal timer diaktifkan"
+fi
+
+# Verify renewal timer
+systemctl list-timers certbot.timer | tail -2 | sed 's/^/    /'
+
+# ============================================================================
+# SECTION 4: Generate SSL Certificates
+# ============================================================================
+print_header "4. Generate SSL Certificates"
+
+case $STRATEGY_TYPE in
+    wildcard)
+        print_info "Generating wildcard certificate untuk: *.${DOMAIN} dan ${DOMAIN}"
+        
+        # Generate wildcard certificate
+        certbot certonly \
+            --agree-tos \
+            --email "$CERT_EMAIL" \
+            --no-eff-email \
+            --nginx \
+            --non-interactive \
+            -d "$DOMAIN" \
+            -d "*.$DOMAIN" 2>&1 | tail -10 | sed 's/^/    /'
+        
+        print_success "Wildcard certificate generated"
+        ;;
+    
+    multiple)
+        print_info "Generating certificates untuk setiap subdomain"
+        
+        for ((i=1; i<=NUM_SUBDOMAINS; i++)); do
+            SUBDOMAIN="aplikasi${i}.${DOMAIN}"
+            
+            print_info "Generating certificate untuk: $SUBDOMAIN"
+            
+            certbot certonly \
+                --agree-tos \
+                --email "$CERT_EMAIL" \
+                --no-eff-email \
+                --webroot \
+                --webroot-path /var/www/certbot \
+                --non-interactive \
+                -d "$SUBDOMAIN" 2>&1 | grep -E "(Successfully|already|existing)" | head -2
+        done
+        
+        print_success "Multiple certificates generated"
+        ;;
+    
+    single)
+        print_info "Generating certificate untuk main domain: $DOMAIN"
+        
+        certbot certonly \
+            --agree-tos \
+            --email "$CERT_EMAIL" \
+            --no-eff-email \
+            --webroot \
+            --webroot-path /var/www/certbot \
+            --non-interactive \
+            -d "$DOMAIN" \
+            -d "www.$DOMAIN" 2>&1 | tail -5 | sed 's/^/    /'
+        
+        print_success "Single certificate generated"
+        ;;
+esac
+
+# ============================================================================
+# SECTION 5: Create Advanced SSL Configuration
+# ============================================================================
+print_header "5. Create Advanced SSL Configuration"
+
+cat > /etc/nginx/includes/ssl-config.conf << 'EOF'
+# SSL Configuration
+# Modern SSL configuration with good security score
+
+# SSL Protocols
+ssl_protocols TLSv1.2 TLSv1.3;
+ssl_prefer_server_ciphers off;
+
+# SSL Ciphers (prefer modern ciphers)
+ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+
+# Session settings
+ssl_session_timeout 1d;
+ssl_session_cache shared:SSL:50m;
+ssl_session_tickets off;
+
+# HSTS (HTTP Strict Transport Security)
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+
+# OCSP stapling
+ssl_stapling on;
+ssl_stapling_verify on;
+ssl_trusted_certificate /etc/letsencrypt/live/DOMAIN_PLACEHOLDER/chain.pem;
+
+# Let's Encrypt DV
+resolver 8.8.8.8 8.8.4.4 valid=300s;
+resolver_timeout 5s;
+EOF
+
+print_success "SSL configuration template created"
+
+# ============================================================================
+# SECTION 6: Update Nginx Main Domain Configuration with SSL
+# ============================================================================
+print_header "6. Update Nginx Configuration dengan SSL"
+
+# Backup existing config
+cp /etc/nginx/sites-available/main-domain /etc/nginx/sites-available/main-domain.backup.$(date +%s)
+
+# Create updated main domain config with SSL
+cat > /etc/nginx/sites-available/main-domain << EOF
+# Main domain configuration with SSL/TLS
+# Domain: $DOMAIN
+
+upstream api_backend {
+    server localhost:3000;
+}
+
+upstream frontend_app {
+    server localhost:3001;
+}
+
+# HTTP to HTTPS redirect
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN www.$DOMAIN *.${DOMAIN};
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    
+    location / {
+        return 301 https://\$server_name\$request_uri;
+    }
+}
+
+# HTTPS Main Server Block
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    
+    server_name $DOMAIN www.$DOMAIN;
+    
+    # SSL Configuration
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    
+    include /etc/nginx/includes/ssl-config.conf;
+    
+    # Logging
+    access_log /var/log/nginx/main-domain.access.log combined buffer=32k flush=1m;
+    error_log /var/log/nginx/main-domain.error.log warn;
+    
+    include /etc/nginx/includes/security-headers.conf;
+    
+    # Root location
+    location = / {
+        proxy_pass http://localhost:3001;
+        include /etc/nginx/includes/proxy-params.conf;
+    }
+    
+    # API routes
+    location /api/ {
+        proxy_pass http://localhost:3000;
+        include /etc/nginx/includes/proxy-params.conf;
+        include /etc/nginx/includes/cors-headers.conf;
+    }
+}
+
+# Wildcard subdomain configuration (untuk app1.domain.com, app2.domain.com, etc)
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    
+    server_name ~^(?<app>.+)\.$DOMAIN\$;
+    
+    # SSL Configuration
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    
+    include /etc/nginx/includes/ssl-config.conf;
+    
+    # Logging per subdomain
+    access_log /var/log/nginx/apps/\$app.access.log combined buffer=32k flush=1m;
+    error_log /var/log/nginx/apps/\$app.error.log warn;
+    
+    include /etc/nginx/includes/security-headers.conf;
+    
+    # Routing subdomain ke port berbeda
+    location / {
+        # Port assignment: app1 -> 3001, app2 -> 3002, etc
+        set \$port 3000;
+        
+        if (\$app = "app1") { set \$port 3001; }
+        if (\$app = "app2") { set \$port 3002; }
+        if (\$app = "app3") { set \$port 3003; }
+        if (\$app = "app4") { set \$port 3004; }
+        if (\$app = "app5") { set \$port 3005; }
+        # Tambahkan lebih banyak sesuai kebutuhan
+        
+        proxy_pass http://localhost:\$port;
+        include /etc/nginx/includes/proxy-params.conf;
+    }
+}
+EOF
+
+print_success "Nginx main domain configuration updated dengan SSL"
+
+# ============================================================================
+# SECTION 7: Create Per-Subdomain SSL Nginx Configs
+# ============================================================================
+print_header "7. Update Subdomain Nginx Configurations"
+
+if [ "$STRATEGY_TYPE" == "multiple" ]; then
+    for ((i=1; i<=NUM_SUBDOMAINS; i++)); do
+        APP_NAME="aplikasi$i"
+        SUBDOMAIN="${APP_NAME}.${DOMAIN}"
+        APP_PORT=$((3000 + i))
+        
+        cat > /etc/nginx/sites-available/app-${APP_NAME}-ssl << EOF
+# SSL Configuration untuk $SUBDOMAIN
+
+upstream ${APP_NAME}_upstream {
+    server localhost:$APP_PORT;
+}
+
+# Redirect HTTP to HTTPS
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${SUBDOMAIN};
+    
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+    
+    location / {
+        return 301 https://\$server_name\$request_uri;
+    }
+}
+
+# HTTPS Server Block
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name ${SUBDOMAIN};
+    
+    # SSL Certificates
+    ssl_certificate /etc/letsencrypt/live/${SUBDOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${SUBDOMAIN}/privkey.pem;
+    
+    include /etc/nginx/includes/ssl-config.conf;
+    
+    # Logging
+    access_log /var/log/nginx/apps/${APP_NAME}.access.log combined buffer=32k flush=1m;
+    error_log /var/log/nginx/apps/${APP_NAME}.error.log warn;
+    
+    include /etc/nginx/includes/security-headers.conf;
+    
+    # Proxy to application
+    location / {
+        proxy_pass http://${APP_NAME}_upstream;
+        include /etc/nginx/includes/proxy-params.conf;
+    }
+}
+EOF
+    done
+    print_success "Subdomain SSL configurations updated"
+fi
+
+# ============================================================================
+# SECTION 8: Create Certbot Renewal Hook
+# ============================================================================
+print_header "8. Create Certbot Renewal Hook"
+
+mkdir -p /etc/letsencrypt/renewal-hooks/post
+
+cat > /etc/letsencrypt/renewal-hooks/post/nginx-reload.sh << 'EOF'
+#!/bin/bash
+# Hook to reload Nginx after certificate renewal
+
+systemctl reload nginx
+
+# Log the event
+echo "Nginx reloaded after certificate renewal at $(date)" >> /var/log/nginx/cert-renewal.log
+EOF
+
+chmod 755 /etc/letsencrypt/renewal-hooks/post/nginx-reload.sh
+
+print_success "Certbot renewal hook created"
+
+# ============================================================================
+# SECTION 9: Test Nginx Configuration and Reload
+# ============================================================================
+print_header "9. Test dan Reload Nginx"
+
+if nginx -t 2>&1 | grep -q "successful"; then
+    print_success "Nginx configuration test passed"
+    systemctl reload nginx
+    print_success "Nginx reloaded"
+else
+    print_error "Nginx configuration test failed"
+    nginx -t
+    exit 1
+fi
+
+# ============================================================================
+# SECTION 10: Verification
+# ============================================================================
+print_header "10. Verifikasi SSL Certificates"
+
+echo -e "\n${BLUE}Generated Certificates:${NC}\n"
+
+ls -lh /etc/letsencrypt/live/ 2>/dev/null | tail -n +2 | sed 's/^/    /'
+
+echo -e "\n${BLUE}Certificate Information:${NC}\n"
+
+for cert_dir in /etc/letsencrypt/live/*/; do
+    if [ -f "${cert_dir}fullchain.pem" ]; then
+        cert_name=$(basename "$cert_dir")
+        expiry=$(openssl x509 -in "${cert_dir}fullchain.pem" -noout -enddate | cut -d= -f2)
+        echo "    $cert_name"
+        echo "    Expires: $expiry"
+        echo ""
+    fi
+done
+
+# ============================================================================
+# SECTION 11: Create Renewal Information
+# ============================================================================
+print_header "11. Certificate Renewal Information"
+
+cat > /home/devel_me/CERTIFICATE_INFO.md << EOF
+# SSL/HTTPS Certificate Management
+
+## Generated Certificates
+
+### Strategy: $STRATEGY_TYPE
+
+## Certificate Locations
+
+Certificates are stored in: /etc/letsencrypt/live/
+
+### Main Domain
+- Certificate: /etc/letsencrypt/live/${DOMAIN}/fullchain.pem
+- Private Key: /etc/letsencrypt/live/${DOMAIN}/privkey.pem
+
+## Auto-Renewal
+
+Certbot renewal is configured to run automatically via systemd timer.
+
+### Check Renewal Status
+\`\`\`bash
+# Check timer status
+systemctl status certbot.timer
+
+# Check renewal logs
+journalctl -u certbot.service
+\`\`\`
+
+### Manual Renewal (if needed)
+\`\`\`bash
+sudo certbot renew --dry-run  # Test renewal
+sudo certbot renew            # Actual renewal
+\`\`\`
+
+## Testing SSL/TLS Configuration
+
+### Check Certificate Validity
+\`\`\`bash
+openssl x509 -in /etc/letsencrypt/live/${DOMAIN}/fullchain.pem -noout -text
+\`\`\`
+
+### Test SSL Score Online
+Visit: https://www.ssllabs.com/ssltest/
+
+### Check HTTPS
+\`\`\`bash
+curl -I https://${DOMAIN}
+curl -I https://aplikasi1.${DOMAIN}
+\`\`\`
+
+## Common Issues
+
+### Certificate Not Found
+Make sure Nginx config points to correct certificate path.
+
+### Certificate Renewal Failed
+Check: \`sudo certbot renew --dry-run\`
+
+### HSTS Issues
+HSTS header is configured. Be careful with domain changes as browsers will enforce HTTPS.
+
+## Certificate Expiry Monitoring
+
+Certificates will be automatically renewed 30 days before expiration.
+
+You'll receive email notifications at: $CERT_EMAIL
+
+Current expiry dates:
+EOF
+
+for cert_dir in /etc/letsencrypt/live/*/; do
+    if [ -f "${cert_dir}fullchain.pem" ]; then
+        cert_name=$(basename "$cert_dir")
+        expiry=$(openssl x509 -in "${cert_dir}fullchain.pem" -noout -enddate)
+        echo "- $cert_name: $expiry" >> /home/devel_me/CERTIFICATE_INFO.md
+    fi
+done
+
+chown devel_me:devel_me /home/devel_me/CERTIFICATE_INFO.md
+
+print_success "Certificate information document created"
+
+# ============================================================================
+# SECTION 12: Create SSL Test Script
+# ============================================================================
+print_header "12. Create SSL Testing Script"
+
+cat > /home/devel_me/test-ssl.sh << 'SCRIPT_EOF'
+#!/bin/bash
+
+# Test SSL configuration for applications
+
+DOMAIN="$1"
+DEFAULT_DOMAIN="domainaplikasimu.id"
+
+if [ -z "$DOMAIN" ]; then
+    DOMAIN=$DEFAULT_DOMAIN
+fi
+
+echo "Testing SSL/HTTPS for domain: $DOMAIN"
+echo "========================================"
+echo ""
+
+# Test main domain
+echo "1. Testing https://$DOMAIN"
+curl -s -o /dev/null -w "Status: %{http_code}\nSSL: %{ssl_verify_result}\nTime: %{time_total}s\n" https://$DOMAIN
+echo ""
+
+# Test www subdomain
+echo "2. Testing https://www.$DOMAIN"
+curl -s -o /dev/null -w "Status: %{http_code}\nSSL: %{ssl_verify_result}\nTime: %{time_total}s\n" https://www.$DOMAIN
+echo ""
+
+# Test application subdomains
+for i in {1..5}; do
+    SUBDOMAIN="aplikasi${i}.${DOMAIN}"
+    echo "${i}. Testing https://$SUBDOMAIN"
+    curl -s -o /dev/null -w "Status: %{http_code}\nSSL: %{ssl_verify_result}\nTime: %{time_total}s\n" https://$SUBDOMAIN 2>&1 || echo "Connection failed"
+    echo ""
+done
+
+echo "SSL Certificate Details:"
+echo "========================================"
+
+openssl s_client -connect $DOMAIN:443 -servername $DOMAIN < /dev/null 2>/dev/null | \
+openssl x509 -noout -subject -issuer -dates
+SCRIPT_EOF
+
+chmod +x /home/devel_me/test-ssl.sh
+chown devel_me:devel_me /home/devel_me/test-ssl.sh
+
+print_success "SSL test script created"
+
+# ============================================================================
+# SECTION 13: Summary and Next Steps
+# ============================================================================
+print_header "13. Summary dan Next Steps"
+
+echo -e "\n${BLUE}SSL/HTTPS Configuration Summary:${NC}\n"
+echo "    Domain:                 $DOMAIN"
+echo "    Certificate Strategy:   $STRATEGY_TYPE"
+echo "    Email:                  $CERT_EMAIL"
+echo "    Auto-renewal:           Enabled (systemd timer)"
+echo ""
+
+echo -e "${BLUE}Certificate Locations:${NC}\n"
+echo "    /etc/letsencrypt/live/${DOMAIN}/"
+echo ""
+
+echo -e "${BLUE}Useful Commands:${NC}\n"
+echo "    Test SSL: ~/test-ssl.sh"
+echo "    Check renewal: systemctl status certbot.timer"
+echo "    View logs: journalctl -u certbot.service"
+echo ""
+
+echo -e "${BLUE}Next Steps:${NC}\n"
+echo "    1. Verify HTTPS is working: https://$DOMAIN"
+echo "    2. Test subdomains: https://aplikasi1.$DOMAIN"
+echo "    3. Proceed to tahap 6 untuk PM2 configuration"
+echo ""
+
+print_header "✓ TAHAP 5 Selesai!"
+
+echo -e "${GREEN}SSL/HTTPS configuration berhasil dikonfigurasi.${NC}"
+echo -e "Lanjut ke tahap berikutnya dengan perintah:\n"
+echo -e "  ${YELLOW}bash tahap6-pm2-ecosystem-config.sh${NC}\n"
