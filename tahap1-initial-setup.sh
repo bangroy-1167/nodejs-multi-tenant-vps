@@ -184,19 +184,31 @@ EOF
 sed -i "s/PORT_PLACEHOLDER/$SSH_PORT/" /tmp/ssh_config_patch.txt
 sed -i "s/USERNAME_PLACEHOLDER/$DEV_USER/" /tmp/ssh_config_patch.txt
 
-# Apply SSH configuration
-sed -i "s/^#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-sed -i "s/^Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-sed -i "s/^PermitRootLogin yes/PermitRootLogin no/" /etc/ssh/sshd_config
-sed -i "s/^#PermitRootLogin no/PermitRootLogin no/" /etc/ssh/sshd_config
-sed -i "s/^PasswordAuthentication yes/PasswordAuthentication no/" /etc/ssh/sshd_config
-sed -i "s/^#PasswordAuthentication no/PasswordAuthentication no/" /etc/ssh/sshd_config
-sed -i "s/^#PubkeyAuthentication yes/PubkeyAuthentication yes/" /etc/ssh/sshd_config
+# Create clean SSH config by removing old Port and AllowUsers lines
+grep -v "^Port " /etc/ssh/sshd_config | grep -v "^#Port " | grep -v "^AllowUsers " > /tmp/sshd_config.tmp
 
-# Add AllowUsers if not exists
-if ! grep -q "^AllowUsers" /etc/ssh/sshd_config; then
-    echo "AllowUsers $DEV_USER" >> /etc/ssh/sshd_config
-fi
+# Append new SSH configurations
+cat >> /tmp/sshd_config.tmp << 'SSH_CONFIG'
+Port SSH_PORT_VAR
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+MaxAuthTries 3
+MaxSessions 10
+ClientAliveInterval 300
+ClientAliveCountMax 2
+AllowUsers SSH_USER_VAR
+SSH_CONFIG
+
+# Replace variables
+sed -i "s/SSH_PORT_VAR/$SSH_PORT/g" /tmp/sshd_config.tmp
+sed -i "s/SSH_USER_VAR/$DEV_USER/g" /tmp/sshd_config.tmp
+
+# Move cleaned config to production
+cp /tmp/sshd_config.tmp /etc/ssh/sshd_config
+chmod 600 /etc/ssh/sshd_config
+rm /tmp/sshd_config.tmp
 
 # Test SSH config
 sshd -t
