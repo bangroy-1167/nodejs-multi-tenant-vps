@@ -1,0 +1,933 @@
+#!/bin/bash
+
+################################################################################
+# TAHAP 6: PM2 Ecosystem Configuration untuk Multi-Application
+# Ubuntu 24.04 LTS
+#
+# Script ini mengkonfigurasi:
+# - Create ecosystem.config.js templates
+# - Environment file management (.env per aplikasi)
+# - PM2 startup dan monitoring setup
+# - Log rotation configuration
+# - PM2 helper scripts
+#
+# Usage: bash tahap6-pm2-ecosystem-config.sh
+################################################################################
+
+set -e
+
+# Color definitions
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# Functions
+print_header() {
+    echo -e "\n${BLUE}===============================================${NC}"
+    echo -e "${BLUE}$1${NC}"
+    echo -e "${BLUE}===============================================${NC}\n"
+}
+
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
+
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+print_info() {
+    echo -e "${CYAN}ℹ $1${NC}"
+}
+
+# Check privileges
+if [[ $EUID -eq 0 ]]; then
+    print_error "Script ini tidak boleh dijalankan dengan sudo"
+    exit 1
+fi
+
+# Get current user
+CURRENT_USER=$(whoami)
+USER_HOME=$(eval echo ~$CURRENT_USER)
+
+# Check if NVM is available
+if [ ! -d "$USER_HOME/.nvm" ]; then
+    print_error "NVM tidak ditemukan. Jalankan tahap2 terlebih dahulu."
+    exit 1
+fi
+
+# Source NVM
+export NVM_DIR="$USER_HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+
+# Check PM2
+if ! command -v pm2 &> /dev/null; then
+    print_error "PM2 tidak ditemukan. Jalankan tahap2 terlebih dahulu."
+    exit 1
+fi
+
+print_header "TAHAP 6: PM2 Ecosystem Configuration"
+
+# ============================================================================
+# SECTION 1: Collect Application Information
+# ============================================================================
+print_header "1. Informasi Aplikasi"
+
+# Get number of applications
+read -p "Jumlah aplikasi yang akan dikonfigurasi [default: 5]: " NUM_APPS
+NUM_APPS=${NUM_APPS:-5}
+
+print_success "Jumlah aplikasi: $NUM_APPS"
+
+# Get apps base directory
+APPS_DIR="$USER_HOME/apps"
+read -p "Direktori aplikasi [$APPS_DIR]: " INPUT_APPS_DIR
+APPS_DIR=${INPUT_APPS_DIR:-$APPS_DIR}
+
+if [ ! -d "$APPS_DIR" ]; then
+    print_error "Direktori aplikasi tidak ditemukan: $APPS_DIR"
+    exit 1
+fi
+
+print_success "Direktori aplikasi: $APPS_DIR"
+
+# Get PM2 config directory
+PM2_CONFIG_DIR="$USER_HOME/pm2-configs"
+mkdir -p "$PM2_CONFIG_DIR"
+
+print_success "PM2 config directory: $PM2_CONFIG_DIR"
+
+# Get domain
+read -p "Domain aplikasi [default: domainaplikasimu.id]: " DOMAIN
+DOMAIN=${DOMAIN:-domainaplikasimu.id}
+
+print_success "Domain: $DOMAIN"
+
+# ============================================================================
+# SECTION 2: Create PM2 Ecosystem Configuration
+# ============================================================================
+print_header "2. Create Master Ecosystem Configuration"
+
+cat > "$PM2_CONFIG_DIR/ecosystem.config.js" << 'EOF'
+module.exports = {
+  apps: [
+APPS_PLACEHOLDER
+  ],
+
+  deploy: {
+    production: {
+      user: 'devel_me',
+      host: '0.0.0.0',
+      ref: 'origin/main',
+      repo: 'git@github.com:youruser/repo.git',
+      path: '/home/devel_me/apps',
+      'post-deploy': 'npm install && npm run build && pm2 reload ecosystem.config.js --env production'
+    },
+    staging: {
+      user: 'devel_me',
+      host: '0.0.0.0',
+      ref: 'origin/develop',
+      repo: 'git@github.com:youruser/repo.git',
+      path: '/home/devel_me/apps',
+      'post-deploy': 'npm install && npm run build && pm2 reload ecosystem.config.js --env staging'
+    }
+  }
+};
+EOF
+
+# Generate apps array for ecosystem config
+APPS_JSON=""
+for ((i=1; i<=NUM_APPS; i++)); do
+    APP_NAME="aplikasi$i"
+    APP_PORT=$((3000 + i))
+    
+    APPS_JSON="${APPS_JSON}    {
+      name: '${APP_NAME}',
+      script: '${APPS_DIR}/${APP_NAME}/dist/index.js',
+      instances: 2,
+      exec_mode: 'cluster',
+      watch: false,
+      
+      env: {
+        NODE_ENV: 'production',
+        PORT: $APP_PORT
+      },
+      
+      error_file: '${APPS_DIR}/logs/${APP_NAME}.error.log',
+      out_file: '${APPS_DIR}/logs/${APP_NAME}.out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      
+      autorestart: true,
+      max_memory_restart: '512M',
+      
+      kill_timeout: 5000,
+      wait_ready: true,
+      
+      env_file: '${APPS_DIR}/${APP_NAME}/.env.production'
+    },"
+done
+
+# Remove trailing comma from last app
+APPS_JSON=${APPS_JSON%,}
+
+# Replace placeholder
+sed -i "s|APPS_PLACEHOLDER|${APPS_JSON}|g" "$PM2_CONFIG_DIR/ecosystem.config.js"
+
+print_success "Master ecosystem.config.js created"
+
+# ============================================================================
+# SECTION 3: Create Individual Application PM2 Configs
+# ============================================================================
+print_header "3. Create Individual Application PM2 Configurations"
+
+for ((i=1; i<=NUM_APPS; i++)); do
+    APP_NAME="aplikasi$i"
+    APP_PORT=$((3000 + i))
+    APP_DIR="$APPS_DIR/$APP_NAME"
+    
+    # Create app-specific ecosystem config
+    cat > "$PM2_CONFIG_DIR/${APP_NAME}.config.js" << EOFAPP
+module.exports = {
+  apps: [
+    {
+      name: '${APP_NAME}',
+      script: '${APP_DIR}/dist/index.js',
+      instances: 2,
+      exec_mode: 'cluster',
+      watch: false,
+      
+      // Environment
+      env: {
+        NODE_ENV: 'development',
+        PORT: $APP_PORT
+      },
+      
+      // Production environment
+      env_production: {
+        NODE_ENV: 'production',
+        PORT: $APP_PORT
+      },
+      
+      // Staging environment
+      env_staging: {
+        NODE_ENV: 'staging',
+        PORT: $APP_PORT
+      },
+      
+      // Logging
+      error_file: '${APPS_DIR}/logs/${APP_NAME}.error.log',
+      out_file: '${APPS_DIR}/logs/${APP_NAME}.out.log',
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      
+      // Restart behavior
+      autorestart: true,
+      max_memory_restart: '512M',
+      min_uptime: '10s',
+      max_restarts: 10,
+      
+      // Graceful shutdown
+      kill_timeout: 5000,
+      listen_timeout: 5000,
+      wait_ready: true,
+      
+      // Environment file
+      env_file: '${APP_DIR}/.env.development',
+      env_production_file: '${APP_DIR}/.env.production',
+      env_staging_file: '${APP_DIR}/.env.staging'
+    }
+  ],
+
+  deploy: {
+    production: {
+      user: 'devel_me',
+      host: '0.0.0.0',
+      ref: 'origin/main',
+      repo: 'git@github.com:youruser/${APP_NAME}.git',
+      path: '${APP_DIR}',
+      'post-deploy': 'npm install --production && npm run build && pm2 reload ${APP_NAME}.config.js --env production'
+    },
+    staging: {
+      user: 'devel_me',
+      host: '0.0.0.0',
+      ref: 'origin/develop',
+      repo: 'git@github.com:youruser/${APP_NAME}.git',
+      path: '${APP_DIR}',
+      'post-deploy': 'npm install && npm run build && pm2 reload ${APP_NAME}.config.js --env staging'
+    }
+  }
+};
+EOFAPP
+
+done
+
+print_success "Individual application configs created untuk $NUM_APPS aplikasi"
+
+# ============================================================================
+# SECTION 4: Create Environment File Templates
+# ============================================================================
+print_header "4. Create Environment File Templates"
+
+for ((i=1; i<=NUM_APPS; i++)); do
+    APP_NAME="aplikasi$i"
+    APP_DIR="$APPS_DIR/$APP_NAME"
+    APP_PORT=$((3000 + i))
+    
+    # Ensure app directory exists
+    mkdir -p "$APP_DIR"
+    
+    # Development environment
+    cat > "$APP_DIR/.env.development" << EOF
+# Development Environment Variables untuk $APP_NAME
+NODE_ENV=development
+PORT=$APP_PORT
+LOG_LEVEL=debug
+
+# API Configuration
+API_URL=http://localhost:$APP_PORT
+API_TIMEOUT=30000
+
+# Database (Supabase)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Authentication
+JWT_SECRET=your-jwt-secret-dev
+SESSION_SECRET=your-session-secret-dev
+
+# Features
+ENABLE_DEBUG=true
+ENABLE_METRICS=false
+ENABLE_PROFILING=false
+
+# Third-party Services
+SENDGRID_API_KEY=your-sendgrid-key
+STRIPE_API_KEY=your-stripe-test-key
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+
+# Application Settings
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:3001
+CORS_CREDENTIALS=true
+RATE_LIMIT_ENABLED=false
+
+# Cache
+REDIS_URL=redis://localhost:6379/0
+CACHE_TTL=3600
+
+# Monitoring
+SENTRY_DSN=
+APP_NAME=$APP_NAME
+VERSION=0.1.0
+
+# Feature Flags
+FEATURE_NEW_DASHBOARD=false
+FEATURE_ANALYTICS=false
+EOF
+
+    # Staging environment
+    cat > "$APP_DIR/.env.staging" << EOF
+# Staging Environment Variables untuk $APP_NAME
+NODE_ENV=staging
+PORT=$APP_PORT
+LOG_LEVEL=info
+
+# API Configuration
+API_URL=https://staging-${APP_NAME}.${DOMAIN}
+API_TIMEOUT=30000
+
+# Database (Supabase)
+SUPABASE_URL=https://your-staging-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Authentication
+JWT_SECRET=your-jwt-secret-staging
+SESSION_SECRET=your-session-secret-staging
+
+# Features
+ENABLE_DEBUG=false
+ENABLE_METRICS=true
+ENABLE_PROFILING=false
+
+# Third-party Services
+SENDGRID_API_KEY=your-sendgrid-key
+STRIPE_API_KEY=your-stripe-test-key
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+
+# Application Settings
+ALLOWED_ORIGINS=https://staging.${DOMAIN}
+CORS_CREDENTIALS=true
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_WINDOW=900000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# Cache
+REDIS_URL=redis://localhost:6379/1
+CACHE_TTL=7200
+
+# Monitoring
+SENTRY_DSN=https://your-sentry-key@sentry.io/project-id
+APP_NAME=$APP_NAME
+VERSION=0.1.0
+
+# Feature Flags
+FEATURE_NEW_DASHBOARD=true
+FEATURE_ANALYTICS=true
+EOF
+
+    # Production environment
+    cat > "$APP_DIR/.env.production" << EOF
+# Production Environment Variables untuk $APP_NAME
+NODE_ENV=production
+PORT=$APP_PORT
+LOG_LEVEL=warn
+
+# API Configuration
+API_URL=https://${APP_NAME}.${DOMAIN}
+API_TIMEOUT=30000
+
+# Database (Supabase)
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+
+# Authentication
+JWT_SECRET=your-jwt-secret-production
+SESSION_SECRET=your-session-secret-production
+JWT_EXPIRATION=7d
+
+# Features
+ENABLE_DEBUG=false
+ENABLE_METRICS=true
+ENABLE_PROFILING=false
+
+# Third-party Services
+SENDGRID_API_KEY=your-sendgrid-key
+STRIPE_API_KEY=your-stripe-live-key
+AWS_REGION=us-east-1
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+
+# Application Settings
+ALLOWED_ORIGINS=https://${DOMAIN},https://${APP_NAME}.${DOMAIN}
+CORS_CREDENTIALS=true
+RATE_LIMIT_ENABLED=true
+RATE_LIMIT_WINDOW=900000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# Cache
+REDIS_URL=redis://localhost:6379/2
+CACHE_TTL=86400
+
+# Monitoring & Error Tracking
+SENTRY_DSN=https://your-sentry-key@sentry.io/project-id
+APP_NAME=$APP_NAME
+VERSION=0.1.0
+
+# Feature Flags
+FEATURE_NEW_DASHBOARD=true
+FEATURE_ANALYTICS=true
+
+# Security
+SECURE_COOKIES=true
+HTTPS_ONLY=true
+EOF
+
+    # Set restrictive permissions for .env files
+    chmod 600 "$APP_DIR"/.env.* 2>/dev/null || true
+
+done
+
+print_success "Environment templates created untuk $NUM_APPS aplikasi"
+
+# ============================================================================
+# SECTION 5: Create PM2 Helper Scripts
+# ============================================================================
+print_header "5. Create PM2 Helper Scripts"
+
+# Start all applications
+cat > "$USER_HOME/pm2-start-all.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Start all applications using ecosystem config
+
+echo "Starting all applications with PM2..."
+pm2 start ~/pm2-configs/ecosystem.config.js
+
+echo ""
+echo "Running applications:"
+pm2 list
+
+echo ""
+echo "Saving PM2 process list..."
+pm2 save
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/pm2-start-all.sh"
+
+# Stop all applications
+cat > "$USER_HOME/pm2-stop-all.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Stop all applications gracefully
+
+echo "Stopping all applications..."
+pm2 stop all
+
+echo "Process list:"
+pm2 list
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/pm2-stop-all.sh"
+
+# Restart all applications
+cat > "$USER_HOME/pm2-restart-all.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Restart all applications
+
+echo "Restarting all applications..."
+pm2 restart all
+
+echo ""
+echo "Running applications:"
+pm2 list
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/pm2-restart-all.sh"
+
+# Start specific application
+cat > "$USER_HOME/pm2-start-app.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Start specific application
+
+APP_NAME=$1
+ENV=${2:-production}
+
+if [ -z "$APP_NAME" ]; then
+    echo "Usage: $0 <app_name> [development|staging|production]"
+    echo "Example: $0 aplikasi1 production"
+    exit 1
+fi
+
+CONFIG_FILE="$HOME/pm2-configs/${APP_NAME}.config.js"
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "Config file not found: $CONFIG_FILE"
+    exit 1
+fi
+
+echo "Starting $APP_NAME (environment: $ENV)..."
+pm2 start "$CONFIG_FILE" --env "$ENV"
+
+echo ""
+pm2 describe "$APP_NAME"
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/pm2-start-app.sh"
+
+# Watch application logs
+cat > "$USER_HOME/pm2-logs-app.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Watch logs for specific application
+
+APP_NAME=$1
+LOG_LINES=${2:-100}
+
+if [ -z "$APP_NAME" ]; then
+    echo "Usage: $0 <app_name> [lines]"
+    echo "Example: $0 aplikasi1 50"
+    exit 1
+fi
+
+echo "Showing last $LOG_LINES lines of logs for $APP_NAME..."
+echo ""
+pm2 logs "$APP_NAME" --lines $LOG_LINES
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/pm2-logs-app.sh"
+
+# Monitor applications
+cat > "$USER_HOME/pm2-monitor.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Real-time monitoring of all applications
+
+echo "PM2 Real-time Monitoring"
+echo "========================"
+echo ""
+echo "Process List:"
+pm2 list
+
+echo ""
+echo "Starting real-time monitoring (Ctrl+C to exit)..."
+pm2 monit
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/pm2-monitor.sh"
+
+print_success "PM2 helper scripts created"
+
+# ============================================================================
+# SECTION 6: Create PM2 Startup Hook
+# ============================================================================
+print_header "6. Setup PM2 Startup Hook"
+
+# Setup PM2 to start on system boot
+pm2 startup systemd -u $CURRENT_USER --hp $USER_HOME > /dev/null 2>&1
+pm2 save > /dev/null 2>&1
+
+print_success "PM2 startup hook configured untuk system boot"
+
+# ============================================================================
+# SECTION 7: Create Log Rotation Configuration
+# ============================================================================
+print_header "7. Create Log Rotation Configuration"
+
+# Create logrotate configuration for PM2 logs
+cat > "/tmp/pm2-logrotate-$CURRENT_USER" << EOF
+$APPS_DIR/logs/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    notifempty
+    create 0640 $CURRENT_USER $CURRENT_USER
+    missingok
+    postrotate
+        # Reload PM2 to reopen log files
+        $NVM_DIR/versions/node/*/bin/pm2 reload all > /dev/null 2>&1 || true
+    endscript
+}
+EOF
+
+# Ask to install logrotate config
+read -p "Install logrotate configuration for PM2 logs? (y/n) [default: y]: " INSTALL_LOGROTATE
+INSTALL_LOGROTATE=${INSTALL_LOGROTATE:-y}
+
+if [[ $INSTALL_LOGROTATE =~ ^[Yy]$ ]]; then
+    # This requires sudo
+    print_info "Logrotate configuration needs to be installed with sudo"
+    echo "Run the following command to install:"
+    echo "  sudo cp /tmp/pm2-logrotate-$CURRENT_USER /etc/logrotate.d/pm2-$CURRENT_USER"
+    echo "  sudo chmod 644 /etc/logrotate.d/pm2-$CURRENT_USER"
+fi
+
+# ============================================================================
+# SECTION 8: Create PM2 Monitoring and Maintenance Guide
+# ============================================================================
+print_header "8. Create PM2 Management Guide"
+
+cat > "$USER_HOME/PM2_MANAGEMENT.md" << EOF
+# PM2 Application Management Guide
+
+## Overview
+PM2 is configured to manage multiple Node.js applications with automatic restart, memory limits, and clustering.
+
+## Configuration Files
+
+### Master Ecosystem Config
+\`$PM2_CONFIG_DIR/ecosystem.config.js\`
+- Manages all applications
+- Use: \`pm2 start ecosystem.config.js\`
+
+### Individual App Configs
+\`$PM2_CONFIG_DIR/{appname}.config.js\`
+- Manage single application
+- Use: \`pm2 start {appname}.config.js --env production\`
+
+## Environment Files
+
+Each application has three environment files:
+- \`.env.development\` - Development environment
+- \`.env.staging\` - Staging environment
+- \`.env.production\` - Production environment
+
+Location: \`$APPS_DIR/{appname}/.env.{env}\`
+
+## Common PM2 Commands
+
+### Start Applications
+\`\`\`bash
+# Start all apps
+pm2 start ~/pm2-configs/ecosystem.config.js
+
+# Start single app
+~/pm2-start-app.sh aplikasi1 production
+
+# Use helper script
+~/pm2-start-all.sh
+\`\`\`
+
+### Stop Applications
+\`\`\`bash
+# Stop all
+pm2 stop all
+
+# Stop single app
+pm2 stop aplikasi1
+
+# Use helper script
+~/pm2-stop-all.sh
+\`\`\`
+
+### Restart Applications
+\`\`\`bash
+# Restart all
+pm2 restart all
+
+# Zero-downtime reload (for code updates)
+pm2 reload aplikasi1
+
+# Use helper script
+~/pm2-restart-all.sh
+\`\`\`
+
+### View Status & Logs
+\`\`\`bash
+# List all processes
+pm2 list
+
+# Detailed process information
+pm2 describe aplikasi1
+
+# Real-time monitoring
+pm2 monit
+
+# View logs (last 100 lines)
+pm2 logs aplikasi1 --lines 100
+
+# Follow logs in real-time
+pm2 logs aplikasi1
+
+# Use helper script
+~/pm2-logs-app.sh aplikasi1 50
+\`\`\`
+
+### Process Management
+\`\`\`bash
+# Save current process list
+pm2 save
+
+# Resurrect saved list after reboot
+pm2 resurrect
+
+# Delete process from PM2
+pm2 delete aplikasi1
+
+# Clear all PM2 processes
+pm2 kill
+\`\`\`
+
+## Environment Management
+
+### Switch Environment
+\`\`\`bash
+# Development
+pm2 start aplikasi1.config.js --env development
+
+# Staging
+pm2 start aplikasi1.config.js --env staging
+
+# Production
+pm2 start aplikasi1.config.js --env production
+\`\`\`
+
+## Memory Management
+
+Each application is configured with:
+- Max memory limit: 512MB
+- Auto-restart if exceeded
+- Monitor with: \`pm2 list\` (shows MEM column)
+
+## Logging
+
+All logs are stored in: \`$APPS_DIR/logs/\`
+
+Log files:
+- \`{appname}.out.log\` - Standard output
+- \`{appname}.error.log\` - Error output
+
+Log rotation is configured to keep 14 days of logs.
+
+## Auto-startup on System Boot
+
+PM2 is configured to auto-start on system reboot.
+
+Check status:
+\`\`\`bash
+pm2 startup
+systemctl status pm2-$CURRENT_USER
+\`\`\`
+
+## Health Checks
+
+### Check Application Health
+\`\`\`bash
+pm2 list
+pm2 describe aplikasi1
+\`\`\`
+
+### Monitor Real-time
+\`\`\`bash
+pm2 monit
+# or
+~/pm2-monitor.sh
+\`\`\`
+
+## Troubleshooting
+
+### Application Keeps Restarting
+1. Check logs: \`pm2 logs {appname}\`
+2. Verify environment variables: \`.env.{env}\` file exists
+3. Check memory limit: \`pm2 describe {appname}\`
+
+### PM2 Daemon Issues
+\`\`\`bash
+# Stop PM2
+pm2 kill
+
+# Start again
+pm2 start ecosystem.config.js
+\`\`\`
+
+### View Detailed Logs
+\`\`\`bash
+pm2 logs {appname} --err
+pm2 logs {appname} --out
+\`\`\`
+
+## Useful Links
+
+- PM2 Documentation: https://pm2.io/doc/en/runtime/overview/
+- PM2 Ecosystem File: https://pm2.io/docs/usage/application-declaration/
+EOF
+
+print_success "PM2 management guide created"
+
+# ============================================================================
+# SECTION 9: Create Deployment Helper Script
+# ============================================================================
+print_header "9. Create Deployment Helper Script"
+
+cat > "$USER_HOME/deploy-app.sh" << 'SCRIPT_EOF'
+#!/bin/bash
+# Helper script untuk deploy aplikasi dari GitHub
+
+APP_NAME=$1
+ENV=${2:-production}
+GITHUB_USER=${3:-bangroy-1167}
+
+if [ -z "$APP_NAME" ]; then
+    echo "Usage: $0 <app_name> [environment] [github_user]"
+    echo "Example: $0 aplikasi1 production bangroy-1167"
+    exit 1
+fi
+
+APPS_DIR="$HOME/apps"
+APP_DIR="$APPS_DIR/$APP_NAME"
+REPO_URL="git@github.com:${GITHUB_USER}/${APP_NAME}.git"
+
+echo "=========================================="
+echo "Deploying: $APP_NAME"
+echo "Environment: $ENV"
+echo "Repository: $REPO_URL"
+echo "=========================================="
+echo ""
+
+# Clone or update repository
+if [ ! -d "$APP_DIR/.git" ]; then
+    echo "[1/5] Cloning repository..."
+    git clone "$REPO_URL" "$APP_DIR"
+else
+    echo "[1/5] Updating repository..."
+    cd "$APP_DIR"
+    git fetch origin
+fi
+
+# Checkout correct branch
+echo "[2/5] Checking out branch..."
+cd "$APP_DIR"
+case $ENV in
+    production) git checkout main ;;
+    staging) git checkout develop ;;
+    development) git checkout develop ;;
+    *) git checkout main ;;
+esac
+git pull origin
+
+# Install dependencies
+echo "[3/5] Installing dependencies..."
+npm install --production
+
+# Build
+echo "[4/5] Building application..."
+npm run build
+
+# Start/restart PM2
+echo "[5/5] Restarting PM2..."
+pm2 reload "$APP_NAME" --env "$ENV"
+
+echo ""
+echo "✓ Deployment complete!"
+echo ""
+pm2 describe "$APP_NAME"
+SCRIPT_EOF
+
+chmod +x "$USER_HOME/deploy-app.sh"
+
+print_success "Deployment helper script created"
+
+# ============================================================================
+# SECTION 10: Verification & Summary
+# ============================================================================
+print_header "10. Verifikasi dan Summary"
+
+echo -e "\n${BLUE}PM2 Configuration Summary:${NC}\n"
+echo "    Total Applications: $NUM_APPS"
+echo "    Config Directory:   $PM2_CONFIG_DIR"
+echo "    Apps Directory:     $APPS_DIR"
+echo "    Logs Directory:     $APPS_DIR/logs"
+echo ""
+
+echo -e "${BLUE}Configuration Files:${NC}\n"
+ls -lh "$PM2_CONFIG_DIR"/*.js 2>/dev/null | awk '{print "    " $9}' | head -10
+echo ""
+
+echo -e "${BLUE}Environment Templates:${NC}\n"
+find "$APPS_DIR" -name ".env.*" 2>/dev/null | head -5 | sed 's/^/    /'
+echo ""
+
+echo -e "${BLUE}Helper Scripts:${NC}\n"
+echo "    PM2 Management:"
+echo "        ~/pm2-start-all.sh"
+echo "        ~/pm2-stop-all.sh"
+echo "        ~/pm2-restart-all.sh"
+echo "        ~/pm2-start-app.sh <app_name> [env]"
+echo "        ~/pm2-logs-app.sh <app_name> [lines]"
+echo "        ~/pm2-monitor.sh"
+echo ""
+echo "    Deployment:"
+echo "        ~/deploy-app.sh <app_name> [environment] [github_user]"
+echo ""
+
+echo -e "${BLUE}Next Steps:${NC}\n"
+echo "    1. Edit .env files dengan konfigurasi real Supabase & services"
+echo "    2. Clone aplikasi ke $APPS_DIR"
+echo "    3. Build aplikasi: npm run build"
+echo "    4. Start dengan PM2: ~/pm2-start-app.sh aplikasi1"
+echo "    5. Monitor dengan: pm2 list dan pm2 logs"
+echo ""
+
+print_header "✓ TAHAP 6 Selesai!"
+
+echo -e "${GREEN}PM2 ecosystem configuration berhasil dikonfigurasi.${NC}"
+echo -e "Lanjut ke tahap berikutnya dengan perintah:\n"
+echo -e "  ${YELLOW}bash tahap7-monitoring-backup-setup.sh${NC}\n"
